@@ -1,0 +1,534 @@
+<!DOCTYPE html>
+<html lang="en" class="no-js">
+<head>
+  <meta charset="UTF-8" />
+  <!-- Mark JS active before paint so scroll-reveal hides content only when it
+       can be revealed again; no-JS users get everything visible by default. -->
+  <script>document.documentElement.classList.remove('no-js');document.documentElement.classList.add('js');</script>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>varde — The smallest attack surface you can ship</title>
+  <meta name="description" content="Distroless, non-root container base images for Java, Python, Node, Go, and Rust — almost nothing to attack: no shell, no package manager, no root. Free and open source, with a scannable SBOM for every image." />
+  <meta name="theme-color" content="#070A10" />
+  <meta name="color-scheme" content="dark" />
+
+  <!-- Open Graph -->
+  <meta property="og:type" content="website" />
+  <meta property="og:title" content="varde — The smallest attack surface you can ship" />
+  <meta property="og:description" content="Free, open-source, distroless, non-root base images for Java, Python, Node, Go, and Rust — built with Nix. No paywall, no token: just docker pull." />
+  <meta property="og:url" content="https://mathiasror.github.io/varde/" />
+  <meta property="og:image" content="./og-image.svg" />
+  <meta property="og:image:width" content="1200" />
+  <meta property="og:image:height" content="630" />
+
+  <!-- Twitter -->
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="varde — The smallest attack surface you can ship" />
+  <meta name="twitter:description" content="Free, open-source, distroless, non-root base images for Java, Python, Node, Go, and Rust — built with Nix. No paywall, no token: just docker pull." />
+  <meta name="twitter:image" content="./og-image.svg" />
+
+  <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="./styles.css" />
+  <script defer src="./main.js"></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+
+  <!-- ============ HEADER ============ -->
+  <header class="site-header" id="top">
+    <div class="container header__inner">
+      <a class="brand" href="#top" aria-label="varde — home">
+        <svg class="brand__mark" viewBox="0 0 32 32" aria-hidden="true" focusable="false">
+          <defs>
+            <linearGradient id="brandStone" gradientUnits="userSpaceOnUse" x1="16" y1="30" x2="16" y2="3">
+              <stop offset="0" stop-color="#3DE7C7"/>
+              <stop offset="0.45" stop-color="#4D87FF"/>
+              <stop offset="0.78" stop-color="#9A7CFF"/>
+              <stop offset="1" stop-color="#C77DFF"/>
+            </linearGradient>
+          </defs>
+          <g fill="url(#brandStone)">
+            <ellipse cx="16" cy="26.4" rx="11" ry="3.5" transform="rotate(-2 16 26.4)"/>
+            <ellipse cx="14.6" cy="20.2" rx="8.4" ry="3.1" transform="rotate(3 14.6 20.2)"/>
+            <ellipse cx="17.1" cy="14.6" rx="6.4" ry="2.7" transform="rotate(-3 17.1 14.6)"/>
+            <ellipse cx="15.4" cy="9.6" rx="4.5" ry="2.3" transform="rotate(4 15.4 9.6)"/>
+            <ellipse cx="16.6" cy="5.4" rx="2.7" ry="1.8"/>
+          </g>
+        </svg>
+        <span class="brand__word">varde</span>
+      </a>
+
+      <nav class="nav" aria-label="Primary">
+        <a class="nav__link" href="#images">Images</a>
+        <a class="nav__link" href="#why">Why</a>
+        <a class="nav__link" href="#usage">Usage</a>
+        <a class="nav__link" href="#open">Free</a>
+        <a class="nav__cta" href="https://github.com/mathiasror/varde" target="_blank" rel="noopener">
+          <svg class="ic-gh" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.6 7.6 0 0 1 2-.27c.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
+          <span>GitHub</span>
+        </a>
+      </nav>
+    </div>
+  </header>
+
+  <main id="main">
+    <!-- ============ HERO ============ -->
+    <section class="hero">
+      <div class="hero__aurora" aria-hidden="true">
+        <span class="glow glow--a"></span>
+        <span class="glow glow--b"></span>
+        <span class="glow glow--c"></span>
+        <span class="hero__grid"></span>
+      </div>
+
+      <div class="container hero__inner">
+        <p class="eyebrow reveal">Distroless<span class="dot">·</span>Non-root<span class="dot">·</span>Free &amp; open source</p>
+
+        <h1 class="hero__title reveal">The smallest attack surface<br />you can ship.</h1>
+
+        <p class="hero__lead reveal">
+          Distroless, non-root base images for Java, Python, Node, Go, and Rust. There's no
+          shell, no package manager, no root — almost nothing for an attacker to land on once
+          they're in, and far less to patch before they are.
+        </p>
+
+        <div class="hero__cta reveal">
+          <a class="btn btn--primary" href="#usage">
+            Get started
+            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" class="ic-arrow"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M5 12h14M13 6l6 6-6 6"/></svg>
+          </a>
+          <a class="btn btn--ghost" href="https://github.com/mathiasror/varde" target="_blank" rel="noopener">
+            <svg class="ic-gh" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.6 7.6 0 0 1 2-.27c.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
+            View on GitHub
+          </a>
+        </div>
+
+        <!-- Quickstart terminal -->
+        <figure class="code-card hero__code reveal" aria-label="Quickstart Dockerfile">
+          <figcaption class="code-card__bar">
+            <span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>
+            <span class="code-card__name">Dockerfile<span class="code-card__hint"> · varde-go</span></span>
+            <button class="btn-copy" type="button" data-target="q-go" aria-label="Copy quickstart Dockerfile">
+              <svg class="ic ic-copy" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" d="M9 9h10v10H9zM5 15V5h10"/></svg>
+              <svg class="ic ic-check" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" d="m5 13 4 4L19 7"/></svg>
+              <span class="btn-copy__text">Copy</span>
+            </button>
+          </figcaption>
+<pre class="code"><code id="q-go"><span class="ln"><span class="tk-key">FROM</span> <span class="tk-img">ghcr.io/mathiasror/varde-go:latest</span></span>
+<span class="ln"><span class="tk-key">COPY</span> app <span class="tk-path">/app/app</span></span>
+<span class="ln tk-c"># inherits USER 1000:1000, WORKDIR /app, ENTRYPOINT</span></code></pre>
+        </figure>
+
+        <ul class="trust reveal" aria-label="At a glance">
+          <li>0 shells</li>
+          <li>0 package managers</li>
+          <li>non-root</li>
+          <li>SBOM per image</li>
+          <li>free &amp; open</li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- ============ IMAGES ============ -->
+    <section id="images" class="section">
+      <div class="container">
+        <header class="section__head reveal">
+          <p class="eyebrow">The catalog</p>
+          <h2 class="section__title">Five runtimes. One contract.</h2>
+          <p class="section__sub">Each image is just the runtime: non-root, no shell, nothing for an attacker to pivot through — with a scannable SBOM for every CVE. Multi-arch, on GitHub Container Registry.</p>
+        </header>
+
+        <ul class="grid grid--images">
+          <li class="card reveal">
+            <div class="card__top">
+              <h3 class="card__name">varde-jre</h3>
+              <ul class="pills"><li>17</li><li>21</li><li>25</li></ul>
+            </div>
+            <p class="card__desc">JVM apps (Java / Kotlin). Prebuilt headless Temurin JRE — drop a fat JAR at <code class="inline">/app/app.jar</code>.</p>
+            <div class="ref">
+              <code id="img-jre" class="ref__code"><span class="tk-key">FROM</span> ghcr.io/mathiasror/varde-jre:21</code>
+              <button class="btn-copy btn-copy--sm" type="button" data-target="img-jre" aria-label="Copy varde-jre reference">
+                <svg class="ic ic-copy" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" d="M9 9h10v10H9zM5 15V5h10"/></svg>
+                <svg class="ic ic-check" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" d="m5 13 4 4L19 7"/></svg>
+                <span class="vh">Copy</span>
+              </button>
+            </div>
+          </li>
+
+          <li class="card reveal">
+            <div class="card__top">
+              <h3 class="card__name">varde-python</h3>
+              <ul class="pills"><li>3.11</li><li>3.12</li><li>3.13</li></ul>
+            </div>
+            <p class="card__desc">Python apps. The CPython interpreter only — no pip, no shell. COPY your resolved deps in.</p>
+            <div class="ref">
+              <code id="img-python" class="ref__code"><span class="tk-key">FROM</span> ghcr.io/mathiasror/varde-python:3.13</code>
+              <button class="btn-copy btn-copy--sm" type="button" data-target="img-python" aria-label="Copy varde-python reference">
+                <svg class="ic ic-copy" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" d="M9 9h10v10H9zM5 15V5h10"/></svg>
+                <svg class="ic ic-check" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" d="m5 13 4 4L19 7"/></svg>
+                <span class="vh">Copy</span>
+              </button>
+            </div>
+          </li>
+
+          <li class="card reveal">
+            <div class="card__top">
+              <h3 class="card__name">varde-node</h3>
+              <ul class="pills"><li>22</li><li>24</li></ul>
+            </div>
+            <p class="card__desc">Node.js apps. The node runtime only — no npm. COPY <code class="inline">node_modules</code> plus your code.</p>
+            <div class="ref">
+              <code id="img-node" class="ref__code"><span class="tk-key">FROM</span> ghcr.io/mathiasror/varde-node:24</code>
+              <button class="btn-copy btn-copy--sm" type="button" data-target="img-node" aria-label="Copy varde-node reference">
+                <svg class="ic ic-copy" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" d="M9 9h10v10H9zM5 15V5h10"/></svg>
+                <svg class="ic ic-check" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" d="m5 13 4 4L19 7"/></svg>
+                <span class="vh">Copy</span>
+              </button>
+            </div>
+          </li>
+
+          <li class="card reveal">
+            <div class="card__top">
+              <h3 class="card__name">varde-go</h3>
+              <ul class="pills"><li>latest</li></ul>
+            </div>
+            <p class="card__desc">Static Go binaries (<code class="inline">CGO_ENABLED=0</code>). Scratch-like base — no libc needed.</p>
+            <div class="ref">
+              <code id="img-go" class="ref__code"><span class="tk-key">FROM</span> ghcr.io/mathiasror/varde-go:latest</code>
+              <button class="btn-copy btn-copy--sm" type="button" data-target="img-go" aria-label="Copy varde-go reference">
+                <svg class="ic ic-copy" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" d="M9 9h10v10H9zM5 15V5h10"/></svg>
+                <svg class="ic ic-check" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" d="m5 13 4 4L19 7"/></svg>
+                <span class="vh">Copy</span>
+              </button>
+            </div>
+          </li>
+
+          <li class="card reveal">
+            <div class="card__top">
+              <h3 class="card__name">varde-rust</h3>
+              <ul class="pills"><li>latest</li></ul>
+            </div>
+            <p class="card__desc">Dynamically-linked Rust binaries. glibc base supplies the loader a <code class="inline">cargo build</code> needs.</p>
+            <div class="ref">
+              <code id="img-rust" class="ref__code"><span class="tk-key">FROM</span> ghcr.io/mathiasror/varde-rust:latest</code>
+              <button class="btn-copy btn-copy--sm" type="button" data-target="img-rust" aria-label="Copy varde-rust reference">
+                <svg class="ic ic-copy" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" d="M9 9h10v10H9zM5 15V5h10"/></svg>
+                <svg class="ic ic-check" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" d="m5 13 4 4L19 7"/></svg>
+                <span class="vh">Copy</span>
+              </button>
+            </div>
+          </li>
+
+          <li class="card card--note reveal">
+            <h3 class="card__name card__name--muted">Every image</h3>
+            <ul class="checklist">
+              <li>Runs as <strong>1000:1000</strong>, non-root</li>
+              <li>Multi-arch <strong>amd64 + arm64</strong> — pick via tag (<code class="inline">:21-arm64</code>)</li>
+              <li>CycloneDX <strong>SBOM with CPEs</strong> for Trivy</li>
+              <li>Rebuilt <strong>weekly</strong> so CVE fixes flow through</li>
+            </ul>
+          </li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- ============ WHY ============ -->
+    <section id="why" class="section section--why">
+      <div class="container">
+        <header class="section__head reveal">
+          <p class="eyebrow">Why varde</p>
+          <h2 class="section__title">Less in the image,<br />less to defend.</h2>
+          <p class="section__sub">A varde — the Norwegian cairn, a stack of stones that marks a trail — carries only the stones that mark the way. These images carry only what your app needs to run.</p>
+        </header>
+
+        <ul class="grid grid--why">
+          <li class="feature reveal">
+            <span class="feature__icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2 3 7v10l9 5 9-5V7Z"/><path d="m3 7 9 5 9-5"/><path d="M12 12v10"/></svg>
+            </span>
+            <h3 class="feature__title">Distroless</h3>
+            <p class="feature__body">No shell, no package manager, no busybox, no coreutils. Just the runtime — nothing for an attacker to pivot through.</p>
+          </li>
+
+          <li class="feature reveal">
+            <span class="feature__icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2 4 5v6c0 5 3.5 8 8 9 4.5-1 8-4 8-9V5Z"/><path d="m9 12 2 2 4-4"/></svg>
+            </span>
+            <h3 class="feature__title">Non-root by default</h3>
+            <p class="feature__body">Every container runs as uid/gid <strong>1000:1000</strong> in a <code class="inline">/app</code> it owns. No root user is even present.</p>
+          </li>
+
+          <li class="feature reveal">
+            <span class="feature__icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="6" width="12" height="12" rx="2"/><rect x="9.5" y="9.5" width="5" height="5" rx="1"/><path d="M9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M2 15h3M19 9h3M19 15h3"/></svg>
+            </span>
+            <h3 class="feature__title">Multi-arch</h3>
+            <p class="feature__body">Native <strong>linux/amd64</strong> and <strong>linux/arm64</strong>, selectable by tag (e.g. <code class="inline">:21-arm64</code>). Same image, your architecture.</p>
+          </li>
+
+          <li class="feature reveal">
+            <span class="feature__icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m20.5 20.5-4-4"/><path d="M8 11h6"/></svg>
+            </span>
+            <h3 class="feature__title">Trivy-scannable</h3>
+            <p class="feature__body">A distroless image has no OS package DB — so a Nix-closure CycloneDX SBOM covers system packages <em>and</em> the runtime for Trivy.</p>
+          </li>
+
+          <li class="feature reveal">
+            <span class="feature__icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2.5v19M3.85 7.25l16.3 9.5M20.15 7.25l-16.3 9.5"/><path d="M12 2.5 9.7 4M12 2.5 14.3 4M12 21.5 9.7 20M12 21.5l2.3 1.5"/></svg>
+            </span>
+            <h3 class="feature__title">Built with Nix</h3>
+            <p class="feature__body">Reproducible builds with exact dependency closures. A weekly CVE-refresh rebuild flows fixes through without a code change.</p>
+          </li>
+
+          <li class="feature reveal">
+            <span class="feature__icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v10"/><path d="m8 9 4 4 4-4"/><path d="M4 15v4a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-4"/></svg>
+            </span>
+            <h3 class="feature__title">Drop your app in</h3>
+            <p class="feature__body">Bring one real artifact — a fat JAR, a binary, code plus its deps — and add two lines of Dockerfile. The entrypoint runs it directly.</p>
+          </li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- ============ USAGE ============ -->
+    <section id="usage" class="section">
+      <div class="container">
+        <header class="section__head reveal">
+          <p class="eyebrow">Usage</p>
+          <h2 class="section__title">Two lines on top of your build.</h2>
+          <p class="section__sub">Build your artifact in a stage that has the tooling, then COPY it onto varde. There's no shell, so the entrypoint runs your app directly.</p>
+        </header>
+
+        <div class="usage reveal">
+          <div class="usage__tabs" role="tablist" aria-label="Language usage examples">
+            <button class="tab is-active" role="tab" id="tab-java" aria-selected="true" aria-controls="panel-java" tabindex="0">Java</button>
+            <button class="tab" role="tab" id="tab-python" aria-selected="false" aria-controls="panel-python" tabindex="-1">Python</button>
+            <button class="tab" role="tab" id="tab-node" aria-selected="false" aria-controls="panel-node" tabindex="-1">Node</button>
+            <button class="tab" role="tab" id="tab-go" aria-selected="false" aria-controls="panel-go" tabindex="-1">Go</button>
+            <button class="tab" role="tab" id="tab-rust" aria-selected="false" aria-controls="panel-rust" tabindex="-1">Rust</button>
+          </div>
+
+          <div class="usage__panels">
+            <div class="code-card" role="tabpanel" id="panel-java" aria-labelledby="tab-java" tabindex="0">
+              <div class="code-card__bar">
+                <span class="code-card__name">Dockerfile<span class="code-card__hint"> · Spring Boot / fat JAR</span></span>
+                <button class="btn-copy" type="button" data-target="use-java" aria-label="Copy Java Dockerfile">
+                  <svg class="ic ic-copy" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" d="M9 9h10v10H9zM5 15V5h10"/></svg>
+                  <svg class="ic ic-check" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" d="m5 13 4 4L19 7"/></svg>
+                  <span class="btn-copy__text">Copy</span>
+                </button>
+              </div>
+<pre class="code"><code id="use-java"><span class="ln"><span class="tk-key">FROM</span> <span class="tk-img">ghcr.io/mathiasror/varde-jre:21</span></span>
+<span class="ln"><span class="tk-key">COPY</span> build/libs/app-all.jar <span class="tk-path">/app/app.jar</span></span></code></pre>
+            </div>
+
+            <div class="code-card" role="tabpanel" id="panel-python" aria-labelledby="tab-python" tabindex="0" hidden>
+              <div class="code-card__bar">
+                <span class="code-card__name">Dockerfile<span class="code-card__hint"> · interpreter + deps</span></span>
+                <button class="btn-copy" type="button" data-target="use-python" aria-label="Copy Python Dockerfile">
+                  <svg class="ic ic-copy" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" d="M9 9h10v10H9zM5 15V5h10"/></svg>
+                  <svg class="ic ic-check" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" d="m5 13 4 4L19 7"/></svg>
+                  <span class="btn-copy__text">Copy</span>
+                </button>
+              </div>
+<pre class="code"><code id="use-python"><span class="ln"><span class="tk-key">FROM</span> <span class="tk-img">ghcr.io/mathiasror/varde-python:3.13</span></span>
+<span class="ln"><span class="tk-key">COPY</span> site-packages/ <span class="tk-path">/app/site-packages</span></span>
+<span class="ln"><span class="tk-key">COPY</span> src/ <span class="tk-path">/app/</span></span></code></pre>
+            </div>
+
+            <div class="code-card" role="tabpanel" id="panel-node" aria-labelledby="tab-node" tabindex="0" hidden>
+              <div class="code-card__bar">
+                <span class="code-card__name">Dockerfile<span class="code-card__hint"> · runtime + node_modules</span></span>
+                <button class="btn-copy" type="button" data-target="use-node" aria-label="Copy Node Dockerfile">
+                  <svg class="ic ic-copy" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" d="M9 9h10v10H9zM5 15V5h10"/></svg>
+                  <svg class="ic ic-check" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" d="m5 13 4 4L19 7"/></svg>
+                  <span class="btn-copy__text">Copy</span>
+                </button>
+              </div>
+<pre class="code"><code id="use-node"><span class="ln"><span class="tk-key">FROM</span> <span class="tk-img">ghcr.io/mathiasror/varde-node:24</span></span>
+<span class="ln"><span class="tk-key">COPY</span> node_modules/ <span class="tk-path">/app/node_modules</span></span>
+<span class="ln"><span class="tk-key">COPY</span> src/ <span class="tk-path">/app/</span></span></code></pre>
+            </div>
+
+            <div class="code-card" role="tabpanel" id="panel-go" aria-labelledby="tab-go" tabindex="0" hidden>
+              <div class="code-card__bar">
+                <span class="code-card__name">Dockerfile<span class="code-card__hint"> · static binary</span></span>
+                <button class="btn-copy" type="button" data-target="use-go" aria-label="Copy Go Dockerfile">
+                  <svg class="ic ic-copy" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" d="M9 9h10v10H9zM5 15V5h10"/></svg>
+                  <svg class="ic ic-check" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" d="m5 13 4 4L19 7"/></svg>
+                  <span class="btn-copy__text">Copy</span>
+                </button>
+              </div>
+<pre class="code"><code id="use-go"><span class="ln"><span class="tk-key">FROM</span> <span class="tk-img">ghcr.io/mathiasror/varde-go:latest</span></span>
+<span class="ln"><span class="tk-key">COPY</span> app <span class="tk-path">/app/app</span></span></code></pre>
+            </div>
+
+            <div class="code-card" role="tabpanel" id="panel-rust" aria-labelledby="tab-rust" tabindex="0" hidden>
+              <div class="code-card__bar">
+                <span class="code-card__name">Dockerfile<span class="code-card__hint"> · glibc binary</span></span>
+                <button class="btn-copy" type="button" data-target="use-rust" aria-label="Copy Rust Dockerfile">
+                  <svg class="ic ic-copy" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" d="M9 9h10v10H9zM5 15V5h10"/></svg>
+                  <svg class="ic ic-check" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" d="m5 13 4 4L19 7"/></svg>
+                  <span class="btn-copy__text">Copy</span>
+                </button>
+              </div>
+<pre class="code"><code id="use-rust"><span class="ln"><span class="tk-key">FROM</span> <span class="tk-img">ghcr.io/mathiasror/varde-rust:latest</span></span>
+<span class="ln"><span class="tk-key">COPY</span> app <span class="tk-path">/app/app</span></span></code></pre>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ NIX BAND ============ -->
+    <section class="section nix-band">
+      <div class="container">
+        <div class="nix-band__inner reveal">
+          <div class="nix-band__lede">
+            <p class="eyebrow">Built with Nix</p>
+            <h2 class="section__title">Every stone accounted for.</h2>
+            <p class="section__sub">Nix builds each image from an exact dependency closure. That same closure becomes the SBOM — so what Trivy scans is precisely what's in the image, down to glibc and zlib.</p>
+          </div>
+
+          <ol class="flow" aria-label="From build to scan">
+            <li class="flow__step">
+              <span class="flow__icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2 3 7v10l9 5 9-5V7Z"/><path d="m3 7 9 5 9-5"/><path d="M12 12v10"/></svg>
+              </span>
+              <h3 class="flow__title">Reproducible closure</h3>
+              <p class="flow__body">Nix pins the exact runtime and system libraries — and only those.</p>
+            </li>
+            <li class="flow__arrow" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+            </li>
+            <li class="flow__step">
+              <span class="flow__icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9Z"/><path d="M14 3v6h6"/><path d="M8 13h8M8 17h5"/></svg>
+              </span>
+              <h3 class="flow__title">Exact CycloneDX SBOM</h3>
+              <p class="flow__body">sbomnix emits a CycloneDX SBOM with CPEs from that closure.</p>
+            </li>
+            <li class="flow__arrow" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+            </li>
+            <li class="flow__step">
+              <span class="flow__icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m20.5 20.5-4-4"/><path d="m8.5 11 2 2 4-4"/></svg>
+              </span>
+              <h3 class="flow__title">Trivy scans it all</h3>
+              <p class="flow__body">System packages and runtime are scannable — not just your app deps.</p>
+            </li>
+          </ol>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ OPEN / FREE ============ -->
+    <section id="open" class="section section--open">
+      <div class="container">
+        <header class="section__head reveal">
+          <p class="eyebrow">Free &amp; open</p>
+          <h2 class="section__title">No paywall. No token.<br />No “contact sales.”</h2>
+          <p class="section__sub">A hardened base image shouldn't come with a sales call, a personal access token, and a per-seat licence. varde is public and yours: read the entire Nix build, scan the SBOM, and <code class="inline">docker pull</code> without an account.</p>
+        </header>
+
+        <div class="compare reveal">
+          <article class="compare__col compare__col--ours">
+            <div class="compare__head">
+              <svg class="compare__mark" viewBox="0 0 32 32" aria-hidden="true" focusable="false">
+                <g fill="url(#brandStone)">
+                  <ellipse cx="16" cy="26.4" rx="11" ry="3.5" transform="rotate(-2 16 26.4)"/>
+                  <ellipse cx="14.6" cy="20.2" rx="8.4" ry="3.1" transform="rotate(3 14.6 20.2)"/>
+                  <ellipse cx="17.1" cy="14.6" rx="6.4" ry="2.7" transform="rotate(-3 17.1 14.6)"/>
+                  <ellipse cx="15.4" cy="9.6" rx="4.5" ry="2.3" transform="rotate(4 15.4 9.6)"/>
+                  <ellipse cx="16.6" cy="5.4" rx="2.7" ry="1.8"/>
+                </g>
+              </svg>
+              <div>
+                <h3 class="compare__name">varde</h3>
+                <p class="compare__tag compare__tag--grad">Free &amp; open source</p>
+              </div>
+            </div>
+            <ul class="compare__list">
+              <li>Free forever — every image, every tag, every arch</li>
+              <li>Anonymous <code class="inline">docker pull</code> — no token, no login</li>
+              <li>Run it across your org — no per-seat or per-image licence</li>
+              <li>The whole build is public — audit the flake yourself</li>
+              <li>SBOMs included for everyone, never an upsell</li>
+            </ul>
+          </article>
+
+          <article class="compare__col compare__col--theirs">
+            <div class="compare__head">
+              <span class="compare__mark compare__mark--lock" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="4.5" y="10.5" width="15" height="10" rx="2"/><path d="M8 10.5V7a4 4 0 0 1 8 0v3.5"/></svg>
+              </span>
+              <div>
+                <h3 class="compare__name">Other “hardened” images</h3>
+                <p class="compare__tag">Free<sup>*</sup> <span class="compare__fine">terms apply</span></p>
+              </div>
+            </div>
+            <ul class="compare__list compare__list--theirs">
+              <li>The catalog that matters sits behind paid tiers or “contact sales”</li>
+              <li>Pulls gated by a personal access token or a paid registry</li>
+              <li>Using it across a team means per-seat licensing</li>
+              <li>Closed pipeline — “trust us, it's minimal”</li>
+              <li>SBOMs, pinned versions, FIPS: enterprise add-ons</li>
+            </ul>
+          </article>
+        </div>
+
+        <div class="open__cta reveal">
+          <a class="btn btn--primary" href="#usage">
+            Pull it — it's free
+            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" class="ic-arrow"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M5 12h14M13 6l6 6-6 6"/></svg>
+          </a>
+          <a class="btn btn--ghost" href="https://github.com/mathiasror/varde" target="_blank" rel="noopener">
+            <svg class="ic-gh" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.6 7.6 0 0 1 2-.27c.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
+            Read the source
+          </a>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- ============ FOOTER ============ -->
+  <footer class="site-footer">
+    <div class="container footer__inner">
+      <div class="footer__brand">
+        <a class="brand" href="#top" aria-label="varde — back to top">
+          <svg class="brand__mark" viewBox="0 0 32 32" aria-hidden="true" focusable="false">
+            <defs>
+              <linearGradient id="footStone" gradientUnits="userSpaceOnUse" x1="16" y1="30" x2="16" y2="3">
+                <stop offset="0" stop-color="#3DE7C7"/>
+                <stop offset="0.45" stop-color="#4D87FF"/>
+                <stop offset="0.78" stop-color="#9A7CFF"/>
+                <stop offset="1" stop-color="#C77DFF"/>
+              </linearGradient>
+            </defs>
+            <g fill="url(#footStone)">
+              <ellipse cx="16" cy="26.4" rx="11" ry="3.5" transform="rotate(-2 16 26.4)"/>
+              <ellipse cx="14.6" cy="20.2" rx="8.4" ry="3.1" transform="rotate(3 14.6 20.2)"/>
+              <ellipse cx="17.1" cy="14.6" rx="6.4" ry="2.7" transform="rotate(-3 17.1 14.6)"/>
+              <ellipse cx="15.4" cy="9.6" rx="4.5" ry="2.3" transform="rotate(4 15.4 9.6)"/>
+              <ellipse cx="16.6" cy="5.4" rx="2.7" ry="1.8"/>
+            </g>
+          </svg>
+          <span class="brand__word">varde</span>
+        </a>
+        <p class="footer__tag">The smallest attack surface you can ship. Built with Nix.</p>
+      </div>
+
+      <div class="footer__meta">
+        <a class="footer__link" href="https://github.com/mathiasror/varde" target="_blank" rel="noopener">
+          <svg class="ic-gh" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.6 7.6 0 0 1 2-.27c.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
+          View on GitHub
+        </a>
+        <p class="footer__note">Images live on <code class="inline">ghcr.io/mathiasror</code></p>
+      </div>
+    </div>
+  </footer>
+</body>
+</html>

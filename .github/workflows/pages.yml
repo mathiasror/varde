@@ -1,0 +1,43 @@
+name: pages
+
+# Deploys the static landing page in site/ to GitHub Pages.
+# Requires repo Settings → Pages → Source = "GitHub Actions" (and, on the Free
+# plan, a public repository — Pages for private repos needs a paid plan).
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "site/**"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One concurrent deploy; don't cancel an in-progress publish.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/configure-pages@v5
+        # Auto-create the Pages site (build_type=workflow) so no manual
+        # Settings → Pages → Source click is needed. Still requires the repo to
+        # be public on the Free plan (Pages for private repos needs a paid plan).
+        with:
+          enablement: true
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+      - id: deployment
+        uses: actions/deploy-pages@v4
