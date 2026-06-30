@@ -1,0 +1,13 @@
+# Nix build outputs
+/result
+/result-*
+
+# Generated scan artifacts
+*.cdx.json
+*.spdx.json
+*.sarif
+sbom.csv
+
+# direnv / editor cruft
+/.direnv/
+.DS_Store
