@@ -1,0 +1,198 @@
+name: build-image
+
+# Builds every varde image discovered in images/*.nix — for each variant and on
+# native amd64 + arm64 runners — scans each with Trivy (system packages + runtime
+# via SBOM, plus an image filesystem scan), publishes per-arch tags to GHCR, and
+# stitches multi-arch + :latest manifest lists. The build matrix and the :latest
+# mapping come straight from the flake (.#ciMatrix / .#latestTags), so adding an
+# image module needs no workflow changes.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+  schedule:
+    - cron: "0 6 * * 1" # weekly rebuild for fresh CVE fixes
+
+permissions:
+  contents: read
+  packages: write
+  security-events: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  REGISTRY: ghcr.io
+  TRIVY_USERNAME: ${{ github.actor }}
+  TRIVY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+
+jobs:
+  setup:
+    name: compute matrix
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.gen.outputs.matrix }}
+      latest: ${{ steps.gen.outputs.latest }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DeterminateSystems/nix-installer-action@main
+      - id: gen
+        name: Derive build matrix from the flake
+        run: |
+          # Cross each {image,tag,attr,sbomName} with the two native arches.
+          matrix=$(nix eval --json .#ciMatrix | jq -c '{include: [
+            .[] as $i
+            | ({name:"amd64",runner:"ubuntu-latest"}, {name:"arm64",runner:"ubuntu-24.04-arm"}) as $a
+            | $i + {arch:$a.name, runner:$a.runner}
+          ]}')
+          latest=$(nix eval --json .#latestTags)
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          echo "latest=$latest" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: ${{ matrix.image }}:${{ matrix.tag }} (${{ matrix.arch }})
+    needs: setup
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.setup.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DeterminateSystems/nix-installer-action@main
+
+      - name: Refresh nixpkgs (scheduled only)
+        if: github.event_name == 'schedule'
+        run: nix flake update
+
+      - name: Build image
+        env:
+          ATTR: ${{ matrix.attr }}
+        run: nix build -L ".#${ATTR}"
+
+      - name: Generate SBOM (full closure incl. system packages)
+        env:
+          SBOM: ${{ matrix.sbomName }}
+        run: nix run ".#${SBOM}" -- sbom.cdx.json
+
+      - name: "Trivy: system packages + runtime (SBOM scan)"
+        run: |
+          # Report-only: a base image should still publish so its SBOM/SARIF stays
+          # visible (Security tab) for downstream to act on. Enforce hard gates in
+          # the *app* image, not here.
+          nix run nixpkgs#trivy -- sbom --scanners vuln --severity HIGH,CRITICAL sbom.cdx.json
+          nix run nixpkgs#trivy -- sbom --scanners vuln \
+            --format sarif --output trivy-sbom.sarif sbom.cdx.json
+
+      - name: "Trivy: image filesystem (app artifacts, secrets, misconfig)"
+        run: |
+          nix run nixpkgs#trivy -- image --input result \
+            --format sarif --output trivy-image.sarif --severity HIGH,CRITICAL
+
+      # SARIF -> Security tab needs code scanning, which private repos only get
+      # with GitHub Advanced Security. Keep it non-fatal so builds still publish;
+      # Trivy findings remain in the step log and the SBOM artifact regardless.
+      - name: Upload SBOM SARIF
+        if: always()
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-sbom.sarif
+          category: sbom-${{ matrix.image }}-${{ matrix.tag }}-${{ matrix.arch }}
+
+      - name: Upload image SARIF
+        if: always()
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-image.sarif
+          category: image-${{ matrix.image }}-${{ matrix.tag }}-${{ matrix.arch }}
+
+      - name: Upload SBOM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-${{ matrix.image }}-${{ matrix.tag }}-${{ matrix.arch }}
+          path: sbom.cdx.json
+
+      - name: Smoke test (image actually runs)
+        env:
+          IMAGE: ${{ matrix.image }}
+        run: |
+          set -euo pipefail
+          ref=$(docker load -i result | sed -n 's/^Loaded image: //p' | head -n1)
+          echo "loaded: $ref"
+          case "$IMAGE" in
+            jre)    docker run --rm --entrypoint /runtime/bin/java    "$ref" -version ;;
+            python) docker run --rm --entrypoint /runtime/bin/python3 "$ref" -c 'print("varde ok")' ;;
+            node)   docker run --rm --entrypoint /runtime/bin/node    "$ref" -e 'console.log("varde ok")' ;;
+            # Compile a hello with the runner's *system* toolchain (not Nix), then
+            # run it via the inherited /app/app entrypoint. Static exercises the
+            # scratch-like base; dynamic exercises the FHS glibc loader + libs.
+            go)     printf '#include <stdio.h>\nint main(){puts("varde ok");return 0;}\n' > hello.c
+                    cc -static -o app hello.c
+                    docker run --rm -v "$PWD/app:/app/app:ro" "$ref" ;;
+            rust)   printf '#include <stdio.h>\nint main(){puts("varde ok");return 0;}\n' > hello.c
+                    cc -o app hello.c
+                    docker run --rm -v "$PWD/app:/app/app:ro" "$ref" ;;
+            *)      echo "no smoke test defined for '$IMAGE'" ;;
+          esac
+
+      - name: Push per-arch image to GHCR
+        if: github.event_name != 'pull_request'
+        env:
+          OWNER: ${{ github.repository_owner }}
+          ACTOR: ${{ github.actor }}
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IMAGE: ${{ matrix.image }}
+          TAG: ${{ matrix.tag }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          owner=$(echo "$OWNER" | tr '[:upper:]' '[:lower:]')
+          img="${REGISTRY}/${owner}/varde-${IMAGE}"
+          # The runner's /etc/containers/registries.conf is v1, which skopeo
+          # rejects. Point it at a minimal v2 config instead.
+          conf="$(mktemp)"; printf 'unqualified-search-registries = []\n' > "$conf"
+          export CONTAINERS_REGISTRIES_CONF="$conf"
+          nix run nixpkgs#skopeo -- --insecure-policy copy \
+            docker-archive:result \
+            "docker://${img}:${TAG}-${ARCH}" \
+            --dest-creds "${ACTOR}:${TOKEN}"
+
+  manifest:
+    name: multi-arch manifests
+    needs: [setup, build]
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Assemble version + latest manifest lists
+        env:
+          OWNER: ${{ github.repository_owner }}
+          MATRIX: ${{ needs.setup.outputs.matrix }}
+          LATEST: ${{ needs.setup.outputs.latest }}
+        run: |
+          owner=$(echo "$OWNER" | tr '[:upper:]' '[:lower:]')
+          reg="${REGISTRY}"
+          # One multi-arch list per image:tag.
+          printf '%s' "$MATRIX" | jq -r '.include[] | "\(.image) \(.tag)"' | sort -u \
+          | while read -r image tag; do
+              img="${reg}/${owner}/varde-${image}"
+              docker buildx imagetools create -t "${img}:${tag}" \
+                "${img}:${tag}-amd64" "${img}:${tag}-arm64"
+            done
+          # :latest per image (flake-declared default tag).
+          printf '%s' "$LATEST" | jq -r 'to_entries[] | "\(.key) \(.value)"' \
+          | while read -r image tag; do
+              img="${reg}/${owner}/varde-${image}"
+              docker buildx imagetools create -t "${img}:latest" \
+                "${img}:${tag}-amd64" "${img}:${tag}-arm64"
+            done
