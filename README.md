@@ -125,6 +125,12 @@ skopeo copy docker-archive:result docker://ghcr.io/mathiasror/varde-jre:21-musl-
 List everything that exists: `nix eval --json .#ciMatrix` (each entry carries its
 `libc`); `nix eval --json .#imageAliases` shows the go/rust aliases.
 
+> **Binary cache.** CI publishes builds to the public [Cachix](https://cachix.org)
+> cache `varde` — especially the musl variants, which aren't in `cache.nixos.org`
+> and would otherwise compile from source. To pull them instead of building, add
+> it as a substituter: `cachix use varde` (its public key is fetched
+> automatically).
+
 ## Vulnerability scanning (Trivy)
 
 A distroless image has **no OS package database**, so `trivy image` alone reports
@@ -196,8 +202,18 @@ data-driven from the flake:
 top of a locally-built base, smoke-tests that the app runs, and asserts an
 image-size budget ([`scripts/e2e.sh`](scripts/e2e.sh)).
 
+Both `build` and `e2e` push/pull a shared **Cachix** cache so the from-source
+musl variants are compiled once and reused across jobs, later runs, and the e2e
+workflow (the first run is slow; subsequent ones are downloads).
+
 Auth uses the built-in `GITHUB_TOKEN`. A weekly cron rebuilds against the latest
 nixpkgs so published images pick up CVE fixes even when this repo is unchanged.
+
+> **Cache setup, one-time:** create a free open-source cache named `varde` at
+> [cachix.org](https://cachix.org) (keep it **public** so fork PRs and end users
+> can read it), then add its write token as the repo secret `CACHIX_AUTH_TOKEN`
+> (Settings → Secrets and variables → Actions). Without the secret, builds still
+> work — they just don't get the cache speedup.
 
 > **First publish, one-time step:** packages pushed by Actions are created
 > **private** by default — even from a public repo — so anonymous `docker pull`
