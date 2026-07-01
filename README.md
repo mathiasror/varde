@@ -127,9 +127,12 @@ List everything that exists: `nix eval --json .#ciMatrix` (each entry carries it
 
 > **Binary cache.** CI publishes builds to the public [Cachix](https://cachix.org)
 > cache `varde` — especially the musl variants, which aren't in `cache.nixos.org`
-> and would otherwise compile from source. To pull them instead of building, add
-> it as a substituter: `cachix use varde` (its public key is fetched
-> automatically).
+> and would otherwise compile from source. To pull them instead of building, run
+> `cachix use varde`, or add to your Nix config:
+> ```
+> extra-substituters = https://varde.cachix.org
+> extra-trusted-public-keys = varde.cachix.org-1:oUZD/OJtc/pTMrpe/p7Ax/2eLhbphON1O5mWRbvWa84=
+> ```
 
 ## Vulnerability scanning (Trivy)
 
