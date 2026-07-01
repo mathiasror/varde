@@ -28,7 +28,7 @@ jobs:
     name: build + smoke examples
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
       # Pull the bases from the shared cache that build.yml populates, instead of
       # recompiling the from-source musl variants here. (Reads are anonymous on

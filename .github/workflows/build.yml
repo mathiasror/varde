@@ -24,6 +24,7 @@ permissions:
   packages: write
   security-events: write
   id-token: write # keyless cosign signing + SBOM attestation (GitHub OIDC)
+  actions: read # let codeql-action read this run for its telemetry call
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -43,7 +44,7 @@ jobs:
       latest: ${{ steps.gen.outputs.latest }}
       aliases: ${{ steps.gen.outputs.aliases }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
       # On the weekly cron, bump nixpkgs ONCE here and share the resolved lock with
       # every build job, so all images in a run — and both arches of each tag —
@@ -53,7 +54,7 @@ jobs:
         if: github.event_name == 'schedule'
         run: nix flake update
       - name: Upload resolved flake.lock
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: flake-lock
           path: flake.lock
@@ -82,7 +83,7 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJSON(needs.setup.outputs.matrix) }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
       # Shared binary cache: the first run compiles the from-source musl variants
       # (node/nginx/redis, and everything on aarch64-musl); every run after that
@@ -96,7 +97,7 @@ jobs:
       # Build against the exact flake.lock the setup job resolved (see there), so
       # this run is internally consistent across images and arches.
       - name: Fetch shared flake.lock
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: flake-lock
 
@@ -130,7 +131,7 @@ jobs:
       - name: Upload SBOM SARIF
         if: always()
         continue-on-error: true
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: trivy-sbom.sarif
           category: sbom-${{ matrix.image }}-${{ matrix.tag }}-${{ matrix.arch }}
@@ -138,13 +139,13 @@ jobs:
       - name: Upload image SARIF
         if: always()
         continue-on-error: true
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: trivy-image.sarif
           category: image-${{ matrix.image }}-${{ matrix.tag }}-${{ matrix.arch }}
 
       - name: Upload SBOM artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: sbom-${{ matrix.image }}-${{ matrix.tag }}-${{ matrix.arch }}
           path: sbom.cdx.json
@@ -237,7 +238,7 @@ jobs:
     steps:
       - uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22 (for `nix run nixpkgs#cosign`)
       - name: Log in to GHCR
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
