@@ -41,20 +41,24 @@ rec {
       ln -s ${pkgs.tzdata}/share/zoneinfo "$out/usr/share/zoneinfo"
     '';
 
-  # FHS-style glibc + libstdc++/libgcc_s so EXTERNALLY-compiled dynamic binaries
-  # (a normal `cargo build`, a manylinux wheel's .so, a native node addon) find
-  # their loader at /lib64/ld-linux-*.so and their libs at /lib. Opt in via
-  # `fhs = true`. The symlinks target the same nixpkgs glibc used everywhere
-  # else, so there is never a version mismatch.
-  mkFhsEnv =
-    pkgs:
+  # FHS-style loader + libc/libstdc++/libgcc_s so EXTERNALLY-compiled dynamic
+  # binaries (a normal `cargo`/`gcc` build, a manylinux/musllinux wheel's .so, a
+  # native node addon) find their loader at /lib(64)/ld-*.so and their libs at
+  # /lib. Opt in via `fhs = true`. `libc` selects glibc or musl; the targets come
+  # from the same package set used for the image's runtime, so there is never a
+  # version mismatch.
+  mkLibcEnv =
+    pkgs: libc:
     let
+      sel = if libc == "musl" then pkgs.pkgsMusl else pkgs;
+      libcPkg = if libc == "musl" then sel.musl else sel.glibc;
+      cxx = sel.stdenv.cc.cc.lib; # libstdc++.so.6 + libgcc_s.so.1
       libDirs = [
-        "${pkgs.glibc}/lib"
-        "${pkgs.stdenv.cc.cc.lib}/lib"
+        "${libcPkg}/lib"
+        "${cxx}/lib"
       ];
     in
-    pkgs.runCommand "varde-fhs-env" { } ''
+    pkgs.runCommand "varde-${libc}-env" { } ''
       mkdir -p "$out/lib" "$out/lib64"
       for d in ${lib.escapeShellArgs libDirs}; do
         for so in "$d"/*.so*; do
@@ -62,8 +66,9 @@ rec {
           ln -sfn "$so" "$out/lib/$(basename "$so")"
         done
       done
-      # Dynamic loader at the conventional path for both arches (/lib and /lib64).
-      for ld in ${pkgs.glibc}/lib/ld-*.so*; do
+      # Dynamic loader at the conventional path(s): glibc ld-linux-*.so (both /lib
+      # and /lib64) and musl ld-musl-<arch>.so.1 (/lib). One glob covers both.
+      for ld in ${libcPkg}/lib/ld-*.so*; do
         [ -e "$ld" ] || continue
         ln -sfn "$ld" "$out/lib/$(basename "$ld")"
         ln -sfn "$ld" "$out/lib64/$(basename "$ld")"
@@ -79,6 +84,42 @@ rec {
       mkdir -p "$out/${subdir}"
       cp -a ${src}/. "$out/${subdir}/"
     '';
+
+  # --- libc axis ------------------------------------------------------------
+
+  # Cross version-tags with libcs into libc-qualified variants. `spec` is a
+  # function of the libc's package set (`pkgs` for glibc, `pkgs.pkgsMusl` for
+  # musl), so the runtime is built against the right libc. A version may restrict
+  # `libcs` (e.g. jre-17 is glibc-only where no musl prebuilt exists).
+  #   versions :: { "<tag>" = { spec = libcPkgs: <spec-without-libc>; libcs ? [ "musl" "glibc" ]; }; }
+  #   result   :: { "<tag>-<libc>" = <spec with libc set>; }
+  mkVariants =
+    pkgs:
+    { versions }:
+    lib.listToAttrs (lib.concatLists (lib.mapAttrsToList (
+      tag: v:
+      map (
+        libc:
+        let
+          libcPkgs = if libc == "musl" then pkgs.pkgsMusl else pkgs;
+        in
+        lib.nameValuePair "${tag}-${libc}" ((v.spec libcPkgs) // { inherit libc; })
+      ) (v.libcs or [ "musl" "glibc" ])
+    ) versions));
+
+  # Compiled-binary bases (single-variant, entrypoint runs /app/app). The libc is
+  # the image's identity, so these are not on the libc-tag axis.
+  staticSpec = { entrypoint = [ "/app/app" ]; libc = null; }; # scratch-like, no loader
+  glibcSpec = {
+    entrypoint = [ "/app/app" ];
+    libc = "glibc";
+    fhs = true;
+  };
+  muslSpec = {
+    entrypoint = [ "/app/app" ];
+    libc = "musl";
+    fhs = true;
+  };
 
   # --- assembly -------------------------------------------------------------
 
@@ -98,7 +139,7 @@ rec {
       (mkCerts pkgs)
       (mkTz pkgs)
     ]
-    ++ lib.optional (spec.fhs or false) (mkFhsEnv pkgs)
+    ++ lib.optional (spec.fhs or false) (mkLibcEnv pkgs (spec.libc or "glibc"))
     ++ (spec.contents or [ ]);
 
   buildImage =
