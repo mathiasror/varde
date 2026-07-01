@@ -30,10 +30,11 @@ Node.js, glibc, and so on) using Nix. Two different kinds of findings:
 ## Verifying what you pulled
 
 Published images are keyless-signed with cosign (Sigstore, via GitHub Actions
-OIDC) and carry a CycloneDX SBOM attestation. Before trusting an image you can
-verify the signature and inspect the SBOM — see **Supply chain: signatures & SBOM
-attestations** in the README for the exact `cosign verify` /
-`cosign verify-attestation` commands.
+OIDC) and carry a CycloneDX SBOM attestation and a SLSA build-provenance
+attestation. Before trusting an image you can verify the signature, provenance,
+and SBOM — see **Supply chain: signatures, SBOM & provenance** in the README for
+the exact `cosign verify` / `gh attestation verify` / `cosign verify-attestation`
+commands.
 
 ## Supported versions
 

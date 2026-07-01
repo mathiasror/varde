@@ -162,14 +162,15 @@ dependency set.
 > **private** repo it needs GitHub Advanced Security, so it's skipped gracefully.
 > Make the repo public (or enable GHAS) and the Security-tab integration lights up.
 
-## Supply chain: signatures & SBOM attestations
+## Supply chain: signatures, SBOM & provenance
 
 Every published image is **keyless-signed** with [cosign](https://docs.sigstore.dev/)
 using the GitHub Actions OIDC identity — no long-lived keys — and each per-arch
 image carries a **CycloneDX SBOM attestation** (the closure SBOM above, attached
-to the image so it travels with it, not just a CI artifact). Both are recorded in
-the public Rekor transparency log. The multi-arch manifest lists are signed too,
-so verifying by tag works.
+to the image so it travels with it, not just a CI artifact) and a **SLSA
+build-provenance attestation** (builder, source commit, invocation). Signatures
+and attestations are recorded in the public Rekor transparency log; the multi-arch
+manifest lists are signed too, so verifying by tag works.
 
 ```bash
 # Verify a signature (the identity is this repo's build.yml workflow):
@@ -177,6 +178,9 @@ cosign verify \
   --certificate-identity-regexp '^https://github.com/mathiasror/varde/' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   ghcr.io/mathiasror/varde-jre:21
+
+# Verify SLSA build provenance (built by this repo's workflow):
+gh attestation verify oci://ghcr.io/mathiasror/varde-jre:21 --owner mathiasror
 
 # The SBOM attestation is per-arch — resolve a platform digest, then verify it:
 d=$(crane digest ghcr.io/mathiasror/varde-jre:21 --platform linux/amd64)

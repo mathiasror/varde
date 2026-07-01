@@ -3,8 +3,9 @@ name: build-image
 # Builds every varde image discovered in images/*.nix — for each variant and on
 # native amd64 + arm64 runners — scans each with Trivy (system packages + runtime
 # via SBOM, plus an image filesystem scan), publishes per-arch tags to GHCR,
-# keyless-signs them and attaches a CycloneDX SBOM attestation (cosign + GitHub
-# OIDC), and stitches multi-arch + :latest manifest lists (signing each index).
+# keyless-signs them and attaches a CycloneDX SBOM + SLSA build-provenance
+# attestation (cosign + GitHub OIDC), and stitches multi-arch + :latest manifest
+# lists (signing each index).
 # The build matrix and the :latest mapping come straight from the flake
 # (.#ciMatrix / .#latestTags), so adding an image module needs no workflow changes.
 # A shared Cachix cache holds the from-source musl builds so later runs (and the
@@ -25,6 +26,7 @@ permissions:
   security-events: write
   id-token: write # keyless cosign signing + SBOM attestation (GitHub OIDC)
   actions: read # let codeql-action read this run for its telemetry call
+  attestations: write # SLSA build-provenance attestation
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -191,6 +193,16 @@ jobs:
             *)      echo "no smoke test defined for '$IMAGE'" ;;
           esac
 
+      # One GHCR login for cosign and the provenance action (skopeo below uses
+      # --dest-creds directly and doesn't need it).
+      - name: Log in to GHCR (signing + attestation)
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
       # NOTE: Actions creates each GHCR package PRIVATE by default, even from a
       # public repo. After the first run, flip each varde-* package to Public
       # (and connect it to this repo) or anonymous `docker pull` returns 401.
@@ -217,8 +229,13 @@ jobs:
             --dest-creds "${ACTOR}:${TOKEN}" \
             docker-archive:result \
             "docker://${img}:${TAG}-${ARCH}"
-          # Hand the exact pushed digest to the signing step (sign by digest, not tag).
-          echo "IMAGE_REF=${img}@$(cat "$dgst")" >> "$GITHUB_ENV"
+          # Hand the exact pushed image name + digest to the signing/attest steps.
+          digest=$(cat "$dgst")
+          {
+            echo "IMAGE_NAME=${img}"
+            echo "IMAGE_DIGEST=${digest}"
+            echo "IMAGE_REF=${img}@${digest}"
+          } >> "$GITHUB_ENV"
 
       # Keyless (GitHub OIDC) signature + a CycloneDX SBOM attestation on the
       # just-pushed per-arch digest. The SBOM is this arch's exact Nix closure
@@ -227,13 +244,20 @@ jobs:
       # `cosign verify` / `cosign verify-attestation` (see the README).
       - name: Sign image + attach SBOM attestation (cosign, keyless)
         if: github.event_name != 'pull_request'
-        env:
-          ACTOR: ${{ github.actor }}
-          TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          nix run nixpkgs#cosign -- login "$REGISTRY" -u "$ACTOR" --password-stdin <<<"$TOKEN"
           nix run nixpkgs#cosign -- sign --yes "$IMAGE_REF"
           nix run nixpkgs#cosign -- attest --yes --type cyclonedx --predicate sbom.cdx.json "$IMAGE_REF"
+
+      # SLSA build-provenance attestation (structured: builder, source commit,
+      # invocation) on the same per-arch digest, pushed to GHCR as a referrer so
+      # it travels with the image. Verify with `gh attestation verify oci://…`.
+      - name: Attest build provenance (SLSA)
+        if: github.event_name != 'pull_request'
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-name: ${{ env.IMAGE_NAME }}
+          subject-digest: ${{ env.IMAGE_DIGEST }}
+          push-to-registry: true
 
   manifest:
     name: multi-arch manifests
