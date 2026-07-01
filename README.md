@@ -162,5 +162,21 @@ lib/default.nix               # shared scaffolding + buildImage / buildSbomApp
 images/<name>.nix             # one module per image
 examples/<name>.Dockerfile    # "drop your app in" examples
 .github/workflows/build.yml   # data-driven matrix build -> Trivy -> GHCR
+.github/workflows/pages.yml   # deploy the landing page to GitHub Pages
+site/                         # landing page (static, no build step)
 docs/design.md                # design notes
+LICENSE                       # Apache-2.0
 ```
+
+## License
+
+varde's own build definitions — the Nix flake, the image modules under
+`images/`, the shared library, the workflows, and the site — are licensed under
+the [Apache License 2.0](LICENSE).
+
+Each published image also bundles third-party software under its own license:
+the language runtimes and system libraries it packages (glibc, the Temurin JRE,
+CPython, Node.js, and their dependencies, for example) are distributed under
+their respective upstream licenses. `nix build` records the exact closure and
+the generated SBOM lists every component, so the full contents are always
+inspectable.

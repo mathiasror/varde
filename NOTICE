@@ -1,0 +1,9 @@
+varde
+Copyright 2026 Mathias Rørvik
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+Container images built from this repository bundle third-party software — the
+language runtimes and system libraries they package (for example glibc, the
+Temurin JRE, CPython, and Node.js) — which is distributed under its own upstream
+licenses.
