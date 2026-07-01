@@ -118,9 +118,14 @@
               <span class="btn-copy__text">Copy</span>
             </button>
           </figcaption>
-<pre class="code"><code id="q-go"><span class="ln"><span class="tk-key">FROM</span> <span class="tk-img">ghcr.io/mathiasror/varde-go:latest</span></span>
-<span class="ln"><span class="tk-key">COPY</span> app <span class="tk-path">/app/app</span></span>
-<span class="ln tk-c"># inherits USER 1000:1000, WORKDIR /app, ENTRYPOINT</span></code></pre>
+<pre class="code"><code id="q-go"><span class="ln tk-c"># build your static binary where the toolchain lives…</span>
+<span class="ln"><span class="tk-key">FROM</span> <span class="tk-img">golang:1-bookworm</span> AS build</span>
+<span class="ln"><span class="tk-key">COPY</span> . .</span>
+<span class="ln"><span class="tk-key">RUN</span> CGO_ENABLED=0 go build -o /out/app .</span>
+<span class="ln"></span>
+<span class="ln tk-c"># …then ship just the binary: non-root, no shell, no OS</span>
+<span class="ln"><span class="tk-key">FROM</span> <span class="tk-img">ghcr.io/mathiasror/varde-go:latest</span></span>
+<span class="ln"><span class="tk-key">COPY</span> --from=build /out/app <span class="tk-path">/app/app</span></span></code></pre>
         </figure>
 
         <ul class="trust reveal" aria-label="At a glance">
@@ -344,8 +349,15 @@
                   <span class="btn-copy__text">Copy</span>
                 </button>
               </div>
-<pre class="code"><code id="use-java"><span class="ln"><span class="tk-key">FROM</span> <span class="tk-img">ghcr.io/mathiasror/varde-jre:21</span></span>
-<span class="ln"><span class="tk-key">COPY</span> build/libs/app-all.jar <span class="tk-path">/app/app.jar</span></span></code></pre>
+<pre class="code"><code id="use-java"><span class="ln tk-c"># build stage: Gradle bootJar -&gt; one self-contained fat jar</span>
+<span class="ln"><span class="tk-key">FROM</span> <span class="tk-img">gradle:8.14-jdk21</span> AS build</span>
+<span class="ln"><span class="tk-key">WORKDIR</span> <span class="tk-path">/home/gradle/src</span></span>
+<span class="ln"><span class="tk-key">COPY</span> --chown=gradle:gradle . .</span>
+<span class="ln"><span class="tk-key">RUN</span> gradle bootJar --no-daemon</span>
+<span class="ln"></span>
+<span class="ln"><span class="tk-key">FROM</span> <span class="tk-img">ghcr.io/mathiasror/varde-jre:21</span></span>
+<span class="ln tk-c"># base ENTRYPOINT is java -jar /app/app.jar — just place the jar</span>
+<span class="ln"><span class="tk-key">COPY</span> --from=build /home/gradle/src/build/libs/app.jar <span class="tk-path">/app/app.jar</span></span></code></pre>
             </div>
 
             <div class="code-card" role="tabpanel" id="panel-python" aria-labelledby="tab-python" tabindex="0" hidden>
@@ -357,9 +369,17 @@
                   <span class="btn-copy__text">Copy</span>
                 </button>
               </div>
-<pre class="code"><code id="use-python"><span class="ln"><span class="tk-key">FROM</span> <span class="tk-img">ghcr.io/mathiasror/varde-python:3.13</span></span>
-<span class="ln"><span class="tk-key">COPY</span> site-packages/ <span class="tk-path">/app/site-packages</span></span>
-<span class="ln"><span class="tk-key">COPY</span> src/ <span class="tk-path">/app/</span></span></code></pre>
+<pre class="code"><code id="use-python"><span class="ln tk-c"># deps stage: alpine = musl, matching the default musl runtime</span>
+<span class="ln"><span class="tk-key">FROM</span> <span class="tk-img">python:3.13-alpine</span> AS deps</span>
+<span class="ln"><span class="tk-key">WORKDIR</span> <span class="tk-path">/build</span></span>
+<span class="ln"><span class="tk-key">COPY</span> requirements.txt .</span>
+<span class="ln"><span class="tk-key">RUN</span> pip install --no-cache-dir --target=/app/site-packages -r requirements.txt</span>
+<span class="ln"></span>
+<span class="ln"><span class="tk-key">FROM</span> <span class="tk-img">ghcr.io/mathiasror/varde-python:3.13</span></span>
+<span class="ln"><span class="tk-key">COPY</span> --from=deps /app/site-packages <span class="tk-path">/app/site-packages</span></span>
+<span class="ln"><span class="tk-key">COPY</span> main.py <span class="tk-path">/app/main.py</span></span>
+<span class="ln tk-c"># no shell to "activate a venv" — put the deps on the import path</span>
+<span class="ln"><span class="tk-key">ENV</span> PYTHONPATH=<span class="tk-path">/app/site-packages</span></span></code></pre>
             </div>
 
             <div class="code-card" role="tabpanel" id="panel-node" aria-labelledby="tab-node" tabindex="0" hidden>
@@ -371,9 +391,17 @@
                   <span class="btn-copy__text">Copy</span>
                 </button>
               </div>
-<pre class="code"><code id="use-node"><span class="ln"><span class="tk-key">FROM</span> <span class="tk-img">ghcr.io/mathiasror/varde-node:24</span></span>
-<span class="ln"><span class="tk-key">COPY</span> node_modules/ <span class="tk-path">/app/node_modules</span></span>
-<span class="ln"><span class="tk-key">COPY</span> src/ <span class="tk-path">/app/</span></span></code></pre>
+<pre class="code"><code id="use-node"><span class="ln tk-c"># deps stage: alpine = musl, so native addons match the runtime</span>
+<span class="ln"><span class="tk-key">FROM</span> <span class="tk-img">node:24-alpine</span> AS deps</span>
+<span class="ln"><span class="tk-key">WORKDIR</span> <span class="tk-path">/build</span></span>
+<span class="ln"><span class="tk-key">COPY</span> package*.json ./</span>
+<span class="ln"><span class="tk-key">RUN</span> npm ci --omit=dev</span>
+<span class="ln"></span>
+<span class="ln"><span class="tk-key">FROM</span> <span class="tk-img">ghcr.io/mathiasror/varde-node:24</span></span>
+<span class="ln"><span class="tk-key">COPY</span> --from=deps /build/node_modules <span class="tk-path">/app/node_modules</span></span>
+<span class="ln"><span class="tk-key">COPY</span> src/ <span class="tk-path">/app/src/</span></span>
+<span class="ln tk-c"># no npm start — point CMD straight at a real file</span>
+<span class="ln"><span class="tk-key">CMD</span> [<span class="tk-path">"/app/src/server.js"</span>]</span></code></pre>
             </div>
 
             <div class="code-card" role="tabpanel" id="panel-go" aria-labelledby="tab-go" tabindex="0" hidden>
@@ -385,8 +413,15 @@
                   <span class="btn-copy__text">Copy</span>
                 </button>
               </div>
-<pre class="code"><code id="use-go"><span class="ln"><span class="tk-key">FROM</span> <span class="tk-img">ghcr.io/mathiasror/varde-go:latest</span></span>
-<span class="ln"><span class="tk-key">COPY</span> app <span class="tk-path">/app/app</span></span></code></pre>
+<pre class="code"><code id="use-go"><span class="ln tk-c"># build stage: CGO_ENABLED=0 -&gt; a fully static binary</span>
+<span class="ln"><span class="tk-key">FROM</span> <span class="tk-img">golang:1-bookworm</span> AS build</span>
+<span class="ln"><span class="tk-key">WORKDIR</span> <span class="tk-path">/src</span></span>
+<span class="ln"><span class="tk-key">COPY</span> . .</span>
+<span class="ln"><span class="tk-key">RUN</span> CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/app .</span>
+<span class="ln"></span>
+<span class="ln"><span class="tk-key">FROM</span> <span class="tk-img">ghcr.io/mathiasror/varde-static:latest</span></span>
+<span class="ln tk-c"># base ENTRYPOINT is /app/app — just drop the binary in</span>
+<span class="ln"><span class="tk-key">COPY</span> --from=build /out/app <span class="tk-path">/app/app</span></span></code></pre>
             </div>
 
             <div class="code-card" role="tabpanel" id="panel-rust" aria-labelledby="tab-rust" tabindex="0" hidden>
@@ -398,8 +433,15 @@
                   <span class="btn-copy__text">Copy</span>
                 </button>
               </div>
-<pre class="code"><code id="use-rust"><span class="ln"><span class="tk-key">FROM</span> <span class="tk-img">ghcr.io/mathiasror/varde-rust:latest</span></span>
-<span class="ln"><span class="tk-key">COPY</span> app <span class="tk-path">/app/app</span></span></code></pre>
+<pre class="code"><code id="use-rust"><span class="ln tk-c"># build stage: a default cargo build links glibc -&gt; varde-glibc</span>
+<span class="ln"><span class="tk-key">FROM</span> <span class="tk-img">rust:1-bookworm</span> AS build</span>
+<span class="ln"><span class="tk-key">WORKDIR</span> <span class="tk-path">/src</span></span>
+<span class="ln"><span class="tk-key">COPY</span> . .</span>
+<span class="ln"><span class="tk-key">RUN</span> cargo build --release --locked</span>
+<span class="ln"></span>
+<span class="ln"><span class="tk-key">FROM</span> <span class="tk-img">ghcr.io/mathiasror/varde-glibc:latest</span></span>
+<span class="ln tk-c"># base ENTRYPOINT is /app/app — just drop the binary in</span>
+<span class="ln"><span class="tk-key">COPY</span> --from=build /src/target/release/app <span class="tk-path">/app/app</span></span></code></pre>
             </div>
 
             <div class="code-card" role="tabpanel" id="panel-nginx" aria-labelledby="tab-nginx" tabindex="0" hidden>
