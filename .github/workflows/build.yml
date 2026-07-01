@@ -64,9 +64,11 @@ jobs:
           ]}')
           latest=$(nix eval --json .#latestTags)
           aliases=$(nix eval --json .#imageAliases)
-          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
-          echo "latest=$latest" >> "$GITHUB_OUTPUT"
-          echo "aliases=$aliases" >> "$GITHUB_OUTPUT"
+          {
+            echo "matrix=$matrix"
+            echo "latest=$latest"
+            echo "aliases=$aliases"
+          } >> "$GITHUB_OUTPUT"
 
   build:
     name: ${{ matrix.image }}:${{ matrix.tag }} (${{ matrix.arch }})
