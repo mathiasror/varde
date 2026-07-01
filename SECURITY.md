@@ -27,6 +27,14 @@ Node.js, glibc, and so on) using Nix. Two different kinds of findings:
   scan yourself (see the README). A fix ultimately belongs upstream/in nixpkgs;
   you're still welcome to flag one here if an image is lagging.
 
+## Verifying what you pulled
+
+Published images are keyless-signed with cosign (Sigstore, via GitHub Actions
+OIDC) and carry a CycloneDX SBOM attestation. Before trusting an image you can
+verify the signature and inspect the SBOM — see **Supply chain: signatures & SBOM
+attestations** in the README for the exact `cosign verify` /
+`cosign verify-attestation` commands.
+
 ## Supported versions
 
 Only the tags currently published from `main` are maintained (see the image

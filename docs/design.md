@@ -105,7 +105,11 @@ generated and scanned, then smoke-tested before publishing: interpreter images
 run a one-liner; the compiled-binary bases run a binary compiled with the
 runner's toolchain through `/app/app` (static via `cc -static`, glibc via `cc`,
 musl via `musl-gcc`), exercising each libc's loader; the service images are
-probed over the network (nginx on `:8080`, `redis-cli ping`).
+probed over the network (nginx on `:8080`, `redis-cli ping`). After publishing,
+each per-arch image is keyless-signed with cosign (Sigstore, GitHub OIDC — no
+long-lived keys) and gets a CycloneDX SBOM attestation (its own arch's closure
+SBOM, attached to the image); the multi-arch indexes are signed too. Both land in
+the public Rekor log; verification commands are in the README.
 
 Registry tags: `:<tag>-<libc>` (a multi-arch manifest list) and
 `:<tag>-<libc>-<arch>` per-arch; a bare `:<tag>` and `:latest` aliasing the
