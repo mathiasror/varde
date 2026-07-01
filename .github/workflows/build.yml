@@ -2,10 +2,11 @@ name: build-image
 
 # Builds every varde image discovered in images/*.nix — for each variant and on
 # native amd64 + arm64 runners — scans each with Trivy (system packages + runtime
-# via SBOM, plus an image filesystem scan), publishes per-arch tags to GHCR, and
-# stitches multi-arch + :latest manifest lists. The build matrix and the :latest
-# mapping come straight from the flake (.#ciMatrix / .#latestTags), so adding an
-# image module needs no workflow changes.
+# via SBOM, plus an image filesystem scan), publishes per-arch tags to GHCR,
+# keyless-signs them and attaches a CycloneDX SBOM attestation (cosign + GitHub
+# OIDC), and stitches multi-arch + :latest manifest lists (signing each index).
+# The build matrix and the :latest mapping come straight from the flake
+# (.#ciMatrix / .#latestTags), so adding an image module needs no workflow changes.
 
 on:
   push:
@@ -20,6 +21,7 @@ permissions:
   contents: read
   packages: write
   security-events: write
+  id-token: write # keyless cosign signing + SBOM attestation (GitHub OIDC)
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -37,6 +39,7 @@ jobs:
     outputs:
       matrix: ${{ steps.gen.outputs.matrix }}
       latest: ${{ steps.gen.outputs.latest }}
+      aliases: ${{ steps.gen.outputs.aliases }}
     steps:
       - uses: actions/checkout@v4
       - uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
@@ -62,8 +65,12 @@ jobs:
             | $i + {arch:$a.name, runner:$a.runner}
           ]}')
           latest=$(nix eval --json .#latestTags)
-          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
-          echo "latest=$latest" >> "$GITHUB_OUTPUT"
+          aliases=$(nix eval --json .#imageAliases)
+          {
+            echo "matrix=$matrix"
+            echo "latest=$latest"
+            echo "aliases=$aliases"
+          } >> "$GITHUB_OUTPUT"
 
   build:
     name: ${{ matrix.image }}:${{ matrix.tag }} (${{ matrix.arch }})
@@ -143,15 +150,28 @@ jobs:
             jre)    docker run --rm --entrypoint /runtime/bin/java    "$ref" -version ;;
             python) docker run --rm --entrypoint /runtime/bin/python3 "$ref" -c 'print("varde ok")' ;;
             node)   docker run --rm --entrypoint /runtime/bin/node    "$ref" -e 'console.log("varde ok")' ;;
-            # Compile a hello with the runner's *system* toolchain (not Nix), then
-            # run it via the inherited /app/app entrypoint. Static exercises the
-            # scratch-like base; dynamic exercises the FHS glibc loader + libs.
-            go)     printf '#include <stdio.h>\nint main(){puts("varde ok");return 0;}\n' > hello.c
+            # Compile a hello with the runner's *system* toolchain (not Nix) and
+            # run it via the inherited /app/app entrypoint. static -> scratch base;
+            # glibc/musl -> the FHS loader + libs for that libc.
+            static) printf '#include <stdio.h>\nint main(){puts("varde ok");return 0;}\n' > hello.c
                     cc -static -o app hello.c
-                    docker run --rm -v "$PWD/app:/app/app:ro" "$ref" ;;
-            rust)   printf '#include <stdio.h>\nint main(){puts("varde ok");return 0;}\n' > hello.c
+                    docker run --rm -v "$PWD/app:/app/app:ro" "$ref" | grep -q "varde ok" ;;
+            glibc)  printf '#include <stdio.h>\nint main(){puts("varde ok");return 0;}\n' > hello.c
                     cc -o app hello.c
-                    docker run --rm -v "$PWD/app:/app/app:ro" "$ref" ;;
+                    docker run --rm -v "$PWD/app:/app/app:ro" "$ref" | grep -q "varde ok" ;;
+            musl)   sudo apt-get update -qq && sudo apt-get install -y -qq musl-tools
+                    printf '#include <stdio.h>\nint main(){puts("varde ok");return 0;}\n' > hello.c
+                    musl-gcc -o app hello.c
+                    docker run --rm -v "$PWD/app:/app/app:ro" "$ref" | grep -q "varde ok" ;;
+            redis)  docker run --rm -d --name vr "$ref" >/dev/null
+                    for _ in $(seq 1 20); do docker exec vr /runtime/bin/redis-cli ping 2>/dev/null | grep -q PONG && break; sleep 0.5; done
+                    docker exec vr /runtime/bin/redis-cli ping | grep -q PONG || { docker logs vr; docker rm -f vr; exit 1; }
+                    echo "varde ok"; docker rm -f vr >/dev/null ;;
+            nginx)  echo '<h1>varde ok</h1>' > index.html
+                    docker run --rm -d --name vn -p 18080:8080 -v "$PWD/index.html:/app/index.html:ro" "$ref" >/dev/null
+                    for _ in $(seq 1 20); do curl -fsS localhost:18080 2>/dev/null | grep -q "varde ok" && break; sleep 0.5; done
+                    curl -fsS localhost:18080 | grep -q "varde ok" || { docker logs vn; docker rm -f vn; exit 1; }
+                    echo "varde ok"; docker rm -f vn >/dev/null ;;
             *)      echo "no smoke test defined for '$IMAGE'" ;;
           esac
 
@@ -175,10 +195,29 @@ jobs:
           # rejects. Point it at a minimal v2 config instead.
           conf="$(mktemp)"; printf 'unqualified-search-registries = []\n' > "$conf"
           export CONTAINERS_REGISTRIES_CONF="$conf"
+          dgst="$RUNNER_TEMP/digest.txt"
           nix run nixpkgs#skopeo -- --insecure-policy copy \
+            --digestfile "$dgst" \
+            --dest-creds "${ACTOR}:${TOKEN}" \
             docker-archive:result \
-            "docker://${img}:${TAG}-${ARCH}" \
-            --dest-creds "${ACTOR}:${TOKEN}"
+            "docker://${img}:${TAG}-${ARCH}"
+          # Hand the exact pushed digest to the signing step (sign by digest, not tag).
+          echo "IMAGE_REF=${img}@$(cat "$dgst")" >> "$GITHUB_ENV"
+
+      # Keyless (GitHub OIDC) signature + a CycloneDX SBOM attestation on the
+      # just-pushed per-arch digest. The SBOM is this arch's exact Nix closure
+      # (system packages + runtime), so the attestation matches the image it's
+      # attached to. Recorded in the public Rekor transparency log; verify with
+      # `cosign verify` / `cosign verify-attestation` (see the README).
+      - name: Sign image + attach SBOM attestation (cosign, keyless)
+        if: github.event_name != 'pull_request'
+        env:
+          ACTOR: ${{ github.actor }}
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          nix run nixpkgs#cosign -- login "$REGISTRY" -u "$ACTOR" --password-stdin <<<"$TOKEN"
+          nix run nixpkgs#cosign -- sign --yes "$IMAGE_REF"
+          nix run nixpkgs#cosign -- attest --yes --type cyclonedx --predicate sbom.cdx.json "$IMAGE_REF"
 
   manifest:
     name: multi-arch manifests
@@ -186,6 +225,7 @@ jobs:
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     steps:
+      - uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22 (for `nix run nixpkgs#cosign`)
       - name: Log in to GHCR
         uses: docker/login-action@v3
         with:
@@ -193,25 +233,63 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Assemble version + latest manifest lists
+      - name: Assemble manifest lists (libc tags, bare/latest aliases, image aliases)
         env:
           OWNER: ${{ github.repository_owner }}
           MATRIX: ${{ needs.setup.outputs.matrix }}
           LATEST: ${{ needs.setup.outputs.latest }}
+          ALIASES: ${{ needs.setup.outputs.aliases }}
         run: |
-          owner=$(echo "$OWNER" | tr '[:upper:]' '[:lower:]')
-          reg="${REGISTRY}"
-          # One multi-arch list per image:tag.
-          printf '%s' "$MATRIX" | jq -r '.include[] | "\(.image) \(.tag)"' | sort -u \
+          owner=$(echo "$OWNER" | tr '[:upper:]' '[:lower:]'); reg="${REGISTRY}"
+          imgref(){ echo "${reg}/${owner}/varde-$1"; }
+          # Create the multi-arch list, then keyless-sign the resulting index so
+          # `cosign verify <tag>` works for anything a user pulls. (Per-arch SBOM
+          # attestations live on the child digests, attached in the build job.)
+          create(){
+            docker buildx imagetools create -t "$1" "$2" "$3"
+            d=$(docker buildx imagetools inspect "$1" --format '{{.Manifest.Digest}}')
+            nix run nixpkgs#cosign -- sign --yes "${1%:*}@${d}"
+          }
+          hastag(){ printf '%s' "$MATRIX" | jq -e --arg im "$1" --arg t "$2" \
+            '.include[]|select(.image==$im and .tag==$t)' >/dev/null; }
+
+          # 1) One multi-arch list per image:matrix-tag (concrete libc-qualified or
+          #    plain-'latest' tags, e.g. jre:21-musl, redis:latest-glibc, static:latest).
+          printf '%s' "$MATRIX" | jq -r '.include[]|"\(.image) \(.tag)"' | sort -u \
           | while read -r image tag; do
-              img="${reg}/${owner}/varde-${image}"
-              docker buildx imagetools create -t "${img}:${tag}" \
-                "${img}:${tag}-amd64" "${img}:${tag}-arm64"
+              i=$(imgref "$image"); create "${i}:${tag}" "${i}:${tag}-amd64" "${i}:${tag}-arm64"
             done
-          # :latest per image (flake-declared default tag).
-          printf '%s' "$LATEST" | jq -r 'to_entries[] | "\(.key) \(.value)"' \
-          | while read -r image tag; do
-              img="${reg}/${owner}/varde-${image}"
-              docker buildx imagetools create -t "${img}:latest" \
-                "${img}:${tag}-amd64" "${img}:${tag}-arm64"
+
+          # 2) For libc-axis images (tags carry -musl/-glibc): bare-version aliases to
+          #    the default libc (musl if built, else glibc), plus :latest / :latest-glibc.
+          for image in $(printf '%s' "$MATRIX" | jq -r '[.include[].image]|unique[]'); do
+            has_libc=$(printf '%s' "$MATRIX" | jq -r --arg im "$image" \
+              '[.include[]|select(.image==$im)|.tag]|any(test("-(musl|glibc)$"))')
+            [ "$has_libc" = "true" ] || continue
+            i=$(imgref "$image")
+            printf '%s' "$MATRIX" | jq -r --arg im "$image" '.include[]|select(.image==$im)|.tag' \
+              | sed -E 's/-(musl|glibc)$//' | sort -u \
+              | while read -r ver; do
+                  if hastag "$image" "${ver}-musl"; then d=musl; else d=glibc; fi
+                  create "${i}:${ver}" "${i}:${ver}-${d}-amd64" "${i}:${ver}-${d}-arm64"
+                done
+            lv=$(printf '%s' "$LATEST" | jq -r --arg im "$image" '.[$im] // empty')
+            [ -n "$lv" ] || continue
+            if hastag "$image" "${lv}-musl"; then d=musl; else d=glibc; fi
+            create "${i}:latest" "${i}:${lv}-${d}-amd64" "${i}:${lv}-${d}-arm64"
+            if hastag "$image" "${lv}-glibc"; then
+              create "${i}:latest-glibc" "${i}:${lv}-glibc-amd64" "${i}:${lv}-glibc-arm64"
+            fi
+          done
+
+          # 3) Image aliases (varde-go -> varde-static, varde-rust -> varde-glibc):
+          #    mirror the source's per-arch digests under the alias name + :latest.
+          printf '%s' "$ALIASES" | jq -r 'to_entries[]|"\(.key) \(.value)"' \
+          | while read -r alias src; do
+              a=$(imgref "$alias"); si=$(imgref "$src")
+              for t in $(printf '%s' "$MATRIX" | jq -r --arg s "$src" \
+                  '.include[]|select(.image==$s)|.tag' | sort -u); do
+                create "${a}:${t}" "${si}:${t}-amd64" "${si}:${t}-arm64"
+                create "${a}:latest" "${si}:${t}-amd64" "${si}:${t}-arm64"
+              done
             done

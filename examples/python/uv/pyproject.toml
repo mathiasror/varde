@@ -1,0 +1,14 @@
+[project]
+name = "varde-example-uv"
+version = "0.1.0"
+description = "varde-python example built with the uv workflow (locked, reproducible deps)."
+requires-python = ">=3.13"
+dependencies = [
+    # Small, PURE-PYTHON dependency: no compiled .so, so it is libc-agnostic and
+    # loads on both the default musl runtime and the opt-in glibc runtime.
+    "python-dateutil>=2.9.0.post0",
+]
+
+# Intentionally no build-system table: this project is an application, not a
+# library. `--no-emit-project` (in the Dockerfile) means uv installs only the
+# dependencies, never the project itself, so nothing here needs to be buildable.

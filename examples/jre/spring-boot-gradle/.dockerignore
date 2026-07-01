@@ -1,0 +1,6 @@
+# Keep the `COPY . .` build context clean and reproducible: never ship local
+# build output or Gradle caches into the builder stage (the image builds fresh).
+build/
+.gradle/
+# There is intentionally no Gradle wrapper in this example; ignore it if present.
+.git/

@@ -91,9 +91,9 @@
         <h1 class="hero__title reveal">The smallest attack surface<br />you can ship.</h1>
 
         <p class="hero__lead reveal">
-          Distroless, non-root base images for Java, Python, Node, Go, and Rust. There's no
-          shell, no package manager, no root — almost nothing for an attacker to land on once
-          they're in, and far less to patch before they are.
+          Distroless, non-root base images for Java, Python, Node, Go, and Rust — plus nginx and
+          Redis. musl by default for a smaller libc; glibc one tag away. No shell, no package
+          manager, no root — almost nothing for an attacker to land on, and far less to patch.
         </p>
 
         <div class="hero__cta reveal">
@@ -125,8 +125,8 @@
 
         <ul class="trust reveal" aria-label="At a glance">
           <li>0 shells</li>
-          <li>0 package managers</li>
           <li>non-root</li>
+          <li>musl by default</li>
           <li>SBOM per image</li>
           <li>free &amp; open</li>
         </ul>
@@ -138,8 +138,8 @@
       <div class="container">
         <header class="section__head reveal">
           <p class="eyebrow">The catalog</p>
-          <h2 class="section__title">Five runtimes. One contract.</h2>
-          <p class="section__sub">Each image is just the runtime: non-root, no shell, nothing for an attacker to pivot through — with a scannable SBOM for every image. Multi-arch, on GitHub Container Registry.</p>
+          <h2 class="section__title">Runtimes, services, any binary.</h2>
+          <p class="section__sub">Each image is just the runtime — or, for a compiled binary, just its libc: non-root, no shell, <strong>musl by default</strong>. A scannable SBOM per image, multi-arch, on GitHub Container Registry.</p>
         </header>
 
         <ul class="grid grid--images">
@@ -193,13 +193,13 @@
 
           <li class="card reveal">
             <div class="card__top">
-              <h3 class="card__name">varde-go</h3>
+              <h3 class="card__name">varde-nginx</h3>
               <ul class="pills"><li>latest</li></ul>
             </div>
-            <p class="card__desc">Static Go binaries (<code class="inline">CGO_ENABLED=0</code>). Scratch-like base — no libc needed.</p>
+            <p class="card__desc">Static sites, non-root on <code class="inline">:8080</code>. <code class="inline">COPY site/ /app/</code> and serve — no root, no shell.</p>
             <div class="ref">
-              <code id="img-go" class="ref__code"><span class="tk-key">FROM</span> ghcr.io/mathiasror/varde-go:latest</code>
-              <button class="btn-copy btn-copy--sm" type="button" data-target="img-go" aria-label="Copy varde-go reference">
+              <code id="img-nginx" class="ref__code"><span class="tk-key">FROM</span> ghcr.io/mathiasror/varde-nginx:latest</code>
+              <button class="btn-copy btn-copy--sm" type="button" data-target="img-nginx" aria-label="Copy varde-nginx reference">
                 <svg class="ic ic-copy" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" d="M9 9h10v10H9zM5 15V5h10"/></svg>
                 <svg class="ic ic-check" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" d="m5 13 4 4L19 7"/></svg>
                 <span class="vh">Copy</span>
@@ -209,13 +209,29 @@
 
           <li class="card reveal">
             <div class="card__top">
-              <h3 class="card__name">varde-rust</h3>
+              <h3 class="card__name">varde-redis</h3>
               <ul class="pills"><li>latest</li></ul>
             </div>
-            <p class="card__desc">Dynamically-linked Rust binaries. glibc base supplies the loader a <code class="inline">cargo build</code> needs.</p>
+            <p class="card__desc">The Redis server, distroless and non-root. Run as-is or drop in a <code class="inline">redis.conf</code>.</p>
             <div class="ref">
-              <code id="img-rust" class="ref__code"><span class="tk-key">FROM</span> ghcr.io/mathiasror/varde-rust:latest</code>
-              <button class="btn-copy btn-copy--sm" type="button" data-target="img-rust" aria-label="Copy varde-rust reference">
+              <code id="img-redis" class="ref__code"><span class="tk-key">FROM</span> ghcr.io/mathiasror/varde-redis:latest</code>
+              <button class="btn-copy btn-copy--sm" type="button" data-target="img-redis" aria-label="Copy varde-redis reference">
+                <svg class="ic ic-copy" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" d="M9 9h10v10H9zM5 15V5h10"/></svg>
+                <svg class="ic ic-check" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" d="m5 13 4 4L19 7"/></svg>
+                <span class="vh">Copy</span>
+              </button>
+            </div>
+          </li>
+
+          <li class="card reveal">
+            <div class="card__top">
+              <h3 class="card__name">varde-static · glibc · musl</h3>
+              <ul class="pills"><li>latest</li></ul>
+            </div>
+            <p class="card__desc">Any compiled binary at <code class="inline">/app/app</code>: <strong>static</strong> (Go <code class="inline">CGO_ENABLED=0</code>), <strong>glibc</strong> (a default <code class="inline">cargo build</code>), or <strong>musl</strong>. <code class="inline">varde-go</code> &amp; <code class="inline">varde-rust</code> alias the first two.</p>
+            <div class="ref">
+              <code id="img-static" class="ref__code"><span class="tk-key">FROM</span> ghcr.io/mathiasror/varde-static:latest</code>
+              <button class="btn-copy btn-copy--sm" type="button" data-target="img-static" aria-label="Copy varde-static reference">
                 <svg class="ic ic-copy" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" d="M9 9h10v10H9zM5 15V5h10"/></svg>
                 <svg class="ic ic-check" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" d="m5 13 4 4L19 7"/></svg>
                 <span class="vh">Copy</span>
@@ -227,7 +243,8 @@
             <h3 class="card__name card__name--muted">Every image</h3>
             <ul class="checklist">
               <li>Runs as <strong>1000:1000</strong>, non-root</li>
-              <li>Multi-arch <strong>amd64 + arm64</strong> — pick via tag (<code class="inline">:21-arm64</code>)</li>
+              <li><strong>musl by default</strong> — <code class="inline">-glibc</code> tag to opt in</li>
+              <li>Multi-arch <strong>amd64 + arm64</strong> (<code class="inline">:21-musl-arm64</code>)</li>
               <li>CycloneDX <strong>SBOM with CPEs</strong> for Trivy</li>
               <li>Rebuilt <strong>weekly</strong> so CVE fixes flow through</li>
             </ul>
@@ -313,6 +330,8 @@
             <button class="tab" role="tab" id="tab-node" aria-selected="false" aria-controls="panel-node" tabindex="-1">Node</button>
             <button class="tab" role="tab" id="tab-go" aria-selected="false" aria-controls="panel-go" tabindex="-1">Go</button>
             <button class="tab" role="tab" id="tab-rust" aria-selected="false" aria-controls="panel-rust" tabindex="-1">Rust</button>
+            <button class="tab" role="tab" id="tab-nginx" aria-selected="false" aria-controls="panel-nginx" tabindex="-1">nginx</button>
+            <button class="tab" role="tab" id="tab-redis" aria-selected="false" aria-controls="panel-redis" tabindex="-1">Redis</button>
           </div>
 
           <div class="usage__panels">
@@ -381,6 +400,34 @@
               </div>
 <pre class="code"><code id="use-rust"><span class="ln"><span class="tk-key">FROM</span> <span class="tk-img">ghcr.io/mathiasror/varde-rust:latest</span></span>
 <span class="ln"><span class="tk-key">COPY</span> app <span class="tk-path">/app/app</span></span></code></pre>
+            </div>
+
+            <div class="code-card" role="tabpanel" id="panel-nginx" aria-labelledby="tab-nginx" tabindex="0" hidden>
+              <div class="code-card__bar">
+                <span class="code-card__name">Dockerfile<span class="code-card__hint"> · static site on :8080</span></span>
+                <button class="btn-copy" type="button" data-target="use-nginx" aria-label="Copy nginx Dockerfile">
+                  <svg class="ic ic-copy" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" d="M9 9h10v10H9zM5 15V5h10"/></svg>
+                  <svg class="ic ic-check" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" d="m5 13 4 4L19 7"/></svg>
+                  <span class="btn-copy__text">Copy</span>
+                </button>
+              </div>
+<pre class="code"><code id="use-nginx"><span class="ln"><span class="tk-key">FROM</span> <span class="tk-img">ghcr.io/mathiasror/varde-nginx:latest</span></span>
+<span class="ln"><span class="tk-key">COPY</span> site/ <span class="tk-path">/app/</span></span>
+<span class="ln tk-c"># serves /app on :8080, non-root</span></code></pre>
+            </div>
+
+            <div class="code-card" role="tabpanel" id="panel-redis" aria-labelledby="tab-redis" tabindex="0" hidden>
+              <div class="code-card__bar">
+                <span class="code-card__name">Dockerfile<span class="code-card__hint"> · redis + config</span></span>
+                <button class="btn-copy" type="button" data-target="use-redis" aria-label="Copy Redis Dockerfile">
+                  <svg class="ic ic-copy" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" d="M9 9h10v10H9zM5 15V5h10"/></svg>
+                  <svg class="ic ic-check" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" d="m5 13 4 4L19 7"/></svg>
+                  <span class="btn-copy__text">Copy</span>
+                </button>
+              </div>
+<pre class="code"><code id="use-redis"><span class="ln"><span class="tk-key">FROM</span> <span class="tk-img">ghcr.io/mathiasror/varde-redis:latest</span></span>
+<span class="ln"><span class="tk-key">COPY</span> redis.conf <span class="tk-path">/app/redis.conf</span></span>
+<span class="ln"><span class="tk-key">CMD</span> [<span class="tk-path">"/app/redis.conf"</span>]</span></code></pre>
             </div>
           </div>
         </div>

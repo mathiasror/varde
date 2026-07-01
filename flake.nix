@@ -45,6 +45,7 @@
             image: m:
             lib.mapAttrsToList (tag: spec: {
               inherit image tag;
+              libc = spec.libc or "glibc";
               attr = "image-${image}-${sanitize tag}";
               sbomName = "sbom-${image}-${sanitize tag}";
               drv = vardeLib.buildImage pkgs {
@@ -81,16 +82,21 @@
         let
           attrs = lib.listToAttrs (map (e: lib.nameValuePair e.attr e.drv) (entriesFor system));
         in
-        attrs // lib.optionalAttrs (attrs ? "image-jre-21") { default = attrs."image-jre-21"; }
+        attrs // lib.optionalAttrs (attrs ? "image-jre-21-musl") { default = attrs."image-jre-21-musl"; }
       );
 
       apps = forAllSystems (
         system: lib.listToAttrs (map (e: lib.nameValuePair e.sbomName e.sbomApp) (entriesFor system))
       );
 
-      # `nix eval --json .#ciMatrix` -> [{image,tag,attr,sbomName}, ...]
-      # `nix eval --json .#latestTags` -> {jre="21"; python="3.13"; ...}
-      ciMatrix = map (e: { inherit (e) image tag attr sbomName; }) (entriesFor "x86_64-linux");
+      # `nix eval --json .#ciMatrix`     -> [{image,tag,attr,sbomName,libc}, ...]
+      # `nix eval --json .#latestTags`   -> {jre="21"; python="3.13"; ...}  (version; CI resolves default libc)
+      # `nix eval --json .#imageAliases` -> {go="static"; rust="glibc";}    (published as mirror digests)
+      ciMatrix = map (e: { inherit (e) image tag attr sbomName libc; }) (entriesFor "x86_64-linux");
       inherit latestTags;
+      imageAliases = {
+        go = "static";
+        rust = "glibc";
+      };
     };
 }

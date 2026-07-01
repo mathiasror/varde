@@ -1,0 +1,11 @@
+[package]
+name = "varde-example"
+version = "0.1.0"
+edition = "2021"
+
+# The varde base images run ENTRYPOINT ["/app/app"], so the produced binary
+# must be named `app`. We pin that explicitly rather than relying on the
+# package name.
+[[bin]]
+name = "app"
+path = "src/main.rs"

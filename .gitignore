@@ -13,3 +13,11 @@ sbom.csv
 .DS_Store
 .idea/
 .vscode/
+
+# example build artifacts (lockfiles ARE committed; build output is not)
+examples/**/node_modules/
+examples/**/target/
+examples/**/build/
+examples/**/.gradle/
+examples/**/.venv/
+examples/**/__pycache__/
