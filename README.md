@@ -72,7 +72,7 @@ from Darwin directly (use the nix-darwin
 just let CI build them). On a Linux host:
 
 ```bash
-nix build .#image-jre-21        # -> ./result  (an OCI image tarball)
+nix build .#image-jre-21        # -> ./result  (a Docker-format image tarball)
 nix build .#image-python-3_12   # note: dots become underscores in attr names
 docker load < result
 # or push without a daemon:
@@ -123,6 +123,13 @@ data-driven from the flake:
 
 Auth uses the built-in `GITHUB_TOKEN`. A weekly cron rebuilds against the latest
 nixpkgs so published images pick up CVE fixes even when this repo is unchanged.
+
+> **First publish, one-time step:** packages pushed by Actions are created
+> **private** by default — even from a public repo — so anonymous `docker pull`
+> would return 401 until you flip them. After the first successful build, set
+> each `varde-*` package to **Public** once (GHCR → the package → *Package
+> settings* → *Change visibility*) and connect it to this repository. Only then
+> does the "just `docker pull`, no token" promise hold.
 
 ## Adding a new image
 

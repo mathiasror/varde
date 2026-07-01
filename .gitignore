@@ -11,3 +11,5 @@ sbom.csv
 # direnv / editor cruft
 /.direnv/
 .DS_Store
+.idea/
+.vscode/

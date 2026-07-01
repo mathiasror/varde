@@ -10,7 +10,6 @@
   --ink:        #070A10;   /* Basalt — page background */
   --ink-2:      #0A0F18;   /* deeper panel */
   --surface:    #10161F;   /* raised glass base */
-  --surface-2:  #131A25;
 
   /* ---- aurora stops ---- */
   --c-teal:   #3DE7C7;
@@ -43,7 +42,6 @@
   --radius-sm: 12px;
 
   --shadow: 0 24px 60px -28px rgba(0,0,0,0.85), 0 2px 8px -4px rgba(0,0,0,0.6);
-  --ring: 0 0 0 1px var(--hair);
 }
 
 /* ---------- reset ---------- */
@@ -118,6 +116,8 @@ button { font: inherit; color: inherit; cursor: pointer; }
   color: var(--muted);
   display: inline-flex;
   align-items: center;
+  flex-wrap: wrap;        /* wrap between labels on narrow screens... */
+  white-space: nowrap;    /* ...but never split a label like "Non-root" */
   gap: .55rem;
 }
 .eyebrow .dot { color: var(--c-blue); opacity: .8; }
@@ -156,6 +156,7 @@ button { font: inherit; color: inherit; cursor: pointer; }
   position: sticky;
   top: 0;
   z-index: 60;
+  background: rgba(7,10,16,0.72); /* fallback for browsers without color-mix() */
   background: color-mix(in oklab, var(--ink) 72%, transparent);
   backdrop-filter: blur(14px) saturate(140%);
   -webkit-backdrop-filter: blur(14px) saturate(140%);
@@ -323,6 +324,7 @@ button { font: inherit; color: inherit; cursor: pointer; }
   background: var(--glass);
   border-color: var(--hair-strong);
   color: var(--text);
+  -webkit-backdrop-filter: blur(8px);
   backdrop-filter: blur(8px);
 }
 .btn--ghost:hover { transform: translateY(-2px); border-color: var(--c-iris); background: var(--glass-2); }
@@ -485,12 +487,13 @@ button { font: inherit; color: inherit; cursor: pointer; }
   font-family: var(--mono);
   font-size: .78rem;
   color: var(--text);
-  white-space: nowrap;
-  overflow-x: auto;
+  /* Wrap the full reference (incl. the tag) rather than clipping it — this card
+     exists to show the exact pull string, so the tag must always be visible. */
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.5;
   flex: 1;
-  scrollbar-width: none;
 }
-.ref__code::-webkit-scrollbar { display: none; }
 .ref__code .tk-key { color: #7af0db; }
 
 /* note card */

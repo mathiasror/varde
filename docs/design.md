@@ -51,7 +51,8 @@ layout when its applications load externally-compiled native code.
 ## FHS glibc layout
 
 `mkFhsEnv` symlinks the dynamic loader to `/lib64/ld-linux-*.so` and
-glibc/libstdc++/libgcc_s into `/lib`, and sets `LD_LIBRARY_PATH`. The targets are
+glibc/libstdc++/libgcc_s into `/lib`; the framework then sets
+`LD_LIBRARY_PATH=/lib:/lib64` for FHS images. The targets are
 the same nixpkgs glibc used in the closure, so there is no version mismatch. It
 is used by the Python, Node, and Rust images (manylinux wheels, native addons,
 the default gnu Rust target). The Go image is static and omits it.

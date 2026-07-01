@@ -38,7 +38,10 @@ COPY src/ /app/
 # CMD ["--enable-source-maps", "/app/main.js"] # pass node flags for ESM/TS output
 #
 # --- Optional: pick a different version by changing the tag --------------------
-# FROM ghcr.io/mathiasror/varde-node:20        # or :22
+# FROM ghcr.io/mathiasror/varde-node:22
+#   If you switch versions, change the deps stage to the matching node:22-slim too:
+#   native addons carry a version-specific ABI (NODE_MODULE_VERSION), so the
+#   builder major must equal the runtime major. (Node 20 is EOL and not published.)
 #
 # --- Optional: force one architecture via an explicit per-arch tag ------------
 # FROM ghcr.io/mathiasror/varde-node:24-arm64  # or :24-amd64

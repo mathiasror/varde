@@ -3,6 +3,10 @@
 (function () {
   "use strict";
 
+  // Signals to the inline failsafe in index.html that this script is running, so
+  // it won't force-reveal content that the scroll observer below already handles.
+  window.__vardeRevealActive = true;
+
   var reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
   /* ---------------------------------------------------------------

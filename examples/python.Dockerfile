@@ -38,6 +38,8 @@ ENV PYTHONPATH=/app/site-packages
 #
 # --- Optional: pick a different Python by changing the tag ---------------------
 # FROM ghcr.io/mathiasror/varde-python:3.11        # or :3.12
+#   Change the deps stage to the matching python:3.11-slim too: manylinux wheels
+#   carry a version-specific ABI tag (cp311), so builder major.minor must match.
 #
 # --- Optional: force one architecture via an explicit per-arch tag -------------
 # FROM ghcr.io/mathiasror/varde-python:3.13-arm64  # or :3.13-amd64

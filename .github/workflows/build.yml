@@ -39,7 +39,19 @@ jobs:
       latest: ${{ steps.gen.outputs.latest }}
     steps:
       - uses: actions/checkout@v4
-      - uses: DeterminateSystems/nix-installer-action@main
+      - uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+      # On the weekly cron, bump nixpkgs ONCE here and share the resolved lock with
+      # every build job, so all images in a run — and both arches of each tag —
+      # build against a single nixpkgs revision (otherwise each job's own
+      # `nix flake update` could pull a different nixos-unstable tip).
+      - name: Refresh nixpkgs (scheduled only)
+        if: github.event_name == 'schedule'
+        run: nix flake update
+      - name: Upload resolved flake.lock
+        uses: actions/upload-artifact@v4
+        with:
+          name: flake-lock
+          path: flake.lock
       - id: gen
         name: Derive build matrix from the flake
         run: |
@@ -62,11 +74,14 @@ jobs:
       matrix: ${{ fromJSON(needs.setup.outputs.matrix) }}
     steps:
       - uses: actions/checkout@v4
-      - uses: DeterminateSystems/nix-installer-action@main
+      - uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
 
-      - name: Refresh nixpkgs (scheduled only)
-        if: github.event_name == 'schedule'
-        run: nix flake update
+      # Build against the exact flake.lock the setup job resolved (see there), so
+      # this run is internally consistent across images and arches.
+      - name: Fetch shared flake.lock
+        uses: actions/download-artifact@v4
+        with:
+          name: flake-lock
 
       - name: Build image
         env:
@@ -140,6 +155,10 @@ jobs:
             *)      echo "no smoke test defined for '$IMAGE'" ;;
           esac
 
+      # NOTE: Actions creates each GHCR package PRIVATE by default, even from a
+      # public repo. After the first run, flip each varde-* package to Public
+      # (and connect it to this repo) or anonymous `docker pull` returns 401.
+      # See the README ("First publish, one-time step").
       - name: Push per-arch image to GHCR
         if: github.event_name != 'pull_request'
         env:
