@@ -1,0 +1,48 @@
+// varde example: minimal Spring Boot (Gradle) build.
+// -----------------------------------------------------------------------------
+// Pinned versions (verified against Maven Central, June 2026):
+//   - org.springframework.boot ......... 4.1.0  (latest GA; supports Java 17-26)
+//   - io.spring.dependency-management .. 1.1.7  (latest)
+// Spring Boot 4.1 requires Gradle 8.14+ (or 9.x) and Java 17+, so the Java 21
+// toolchain below and the gradle:8.14-jdk21 builder image both satisfy it.
+plugins {
+    id 'java'
+    // The Spring Boot plugin contributes the `bootJar` task (the self-contained
+    // executable fat jar) and imports the Spring Boot dependencies BOM.
+    id 'org.springframework.boot' version '4.1.0'
+    // Applies the BOM so starters can be declared WITHOUT explicit versions.
+    id 'io.spring.dependency-management' version '1.1.7'
+}
+
+group = 'com.example'
+version = '0.0.1-SNAPSHOT'
+
+// Target Java 21 to match the varde-jre:21 runtime. The Gradle toolchain will
+// select (or provision) a JDK 21 regardless of the JDK that launched Gradle.
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(21)
+    }
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    // Web starter only — no Actuator, keeping the image minimal. The BOM
+    // (via the dependency-management plugin) manages the version, so none here.
+    implementation 'org.springframework.boot:spring-boot-starter-web'
+}
+
+// `bootJar` is enabled automatically once the plugin finds a main class, and it
+// builds a single self-contained executable ("fat") jar — exactly the artifact
+// the varde-jre base expects at /app/app.jar.
+//
+// We pin the output name to app.jar so the Dockerfile can COPY a LITERAL
+// filename instead of a `*.jar` glob. (A full `gradle build` can also emit a
+// plain `-plain.jar`; a glob matching two jars would break the COPY. `gradle
+// bootJar` alone only produces this one, but the explicit name is bulletproof.)
+bootJar {
+    archiveFileName = 'app.jar'
+}

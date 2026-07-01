@@ -1,0 +1,7 @@
+# A small, PURE-PYTHON dependency: python-dateutil ships as a pure-Python wheel
+# (no compiled extension modules), so it is libc-agnostic — the exact same wheel
+# imports cleanly on the default musl runtime and on the opt-in glibc runtime.
+# That makes it the ideal "it just works" first dependency example.
+#
+# Pin exactly for reproducible builds.
+python-dateutil==2.9.0.post0

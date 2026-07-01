@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>varde</title>
+  </head>
+  <body>
+    <!--
+      This is the entire "app". The varde-nginx base serves /app with
+      `index index.html;`, so a request to `/` returns this file.
+
+      The e2e smoke test does `GET /` and asserts the body contains the exact
+      string "varde ok" — keep that text in the page.
+    -->
+    <h1>varde ok</h1>
+    <p>Served by the distroless, non-root <code>varde-nginx</code> base on :8080.</p>
+  </body>
+</html>

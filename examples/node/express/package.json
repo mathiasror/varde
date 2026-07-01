@@ -1,0 +1,13 @@
+{
+  "name": "varde-example-express",
+  "version": "1.0.0",
+  "description": "Production-shaped Express server on the varde-node distroless base image.",
+  "private": true,
+  "main": "src/server.js",
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "express": "^4.21.2"
+  }
+}
