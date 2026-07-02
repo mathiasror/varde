@@ -29,7 +29,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+      # `determinate: false` -> plain upstream Nix; avoids the FlakeHub login
+      # warning on every job (we use Cachix, not FlakeHub — see build.yml).
       - uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+        with:
+          determinate: false
       # Pull the bases from the shared cache that build.yml populates, instead of
       # recompiling the from-source musl variants here. (Reads are anonymous on
       # the public cache; the token is only needed to push.)
