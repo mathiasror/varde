@@ -29,7 +29,7 @@ let
   # inputs match the interpreter's libc.
   mkPhp =
     p: basePhp:
-    basePhp.override {
+    (basePhp.override {
       # php-fpm's sd_notify support links libsystemd, whose closure on musl
       # drags in clang/llvm — same lesson as images/redis.nix. Useless under a
       # container supervisor anyway.
@@ -62,7 +62,14 @@ let
             "PROG_SENDMAIL=/usr/sbin/sendmail"
           ];
       };
-    };
+    }).withExtensions
+      (
+        { all, enabled }:
+        # openldap doesn't compile on musl (openssl 3.x deprecation fallout in
+        # its TLS layer), and LDAP from a distroless PHP is niche. Dropped on
+        # BOTH libcs so the musl and glibc tags stay behavior-identical.
+        builtins.filter (e: e != all.ldap) enabled
+      );
 
   phpSpec =
     p: basePhp:

@@ -83,6 +83,8 @@ let
         # MySQL's test/example plugins, which are dead weight and attack
         # surface in a distroless image.
         cp -a ${mysql}/lib/mysql/plugin "$out/runtime/lib/mysql/plugin"
+        # cp -a keeps the store's read-only dir modes; rm needs writable dirs.
+        chmod -R u+w "$out/runtime/lib/mysql/plugin"
         rm -f "$out/runtime/lib/mysql/plugin"/*test* \
               "$out/runtime/lib/mysql/plugin"/*example* \
               "$out/runtime/lib/mysql/plugin"/*mock* \

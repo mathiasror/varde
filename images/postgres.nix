@@ -73,30 +73,40 @@ let
   pgSpec =
     p: pgBase:
     let
-      pg =
-        (pgBase.override {
-          jitSupport = false;
-          systemdSupport = false;
-          pamSupport = false;
-          perlSupport = false;
-          pythonSupport = false;
-          tclSupport = false;
-          curlSupport = false;
-          # Keep the package set's default (gcc) stdenv: generic.nix only calls
-          # overrideCC to swap in a clang stdenv for -flto, and laziness means
-          # the clang argument is never evaluated (see header).
-          overrideCC = _stdenv: _cc: p.stdenv;
-          # With JIT off, llvmPackages is only forced via
-          # outputChecks.disallowedRequisites; a stub keeps the multi-hour musl
-          # llvm build out of the closure (the check then trivially passes).
-          llvmPackages = {
-            llvm = {
-              out = p.emptyDirectory;
-              lib = p.emptyDirectory;
-            };
+      isMusl = p.stdenv.hostPlatform.isMusl;
+      flags = {
+        jitSupport = false;
+        systemdSupport = false;
+        pamSupport = false;
+        perlSupport = false;
+        pythonSupport = false;
+        tclSupport = false;
+        curlSupport = false;
+      };
+      # MUSL ONLY: on glibc, upstream's clang+LTO arrangement is Hydra's own
+      # well-trodden path (clang substitutes from cache.nixos.org) — and forcing
+      # gcc/no-LTO there tripped a lib->dev output-reference cycle on
+      # postgresql 16. The surgery exists solely to keep the multi-hour clang/
+      # llvm builds out of the musl closure.
+      muslSurgery = {
+        # Keep the package set's default (gcc) stdenv: generic.nix only calls
+        # overrideCC to swap in a clang stdenv for -flto, and laziness means
+        # the clang argument is never evaluated (see header).
+        overrideCC = _stdenv: _cc: p.stdenv;
+        # With JIT off, llvmPackages is only forced via
+        # outputChecks.disallowedRequisites; a stub keeps the multi-hour musl
+        # llvm build out of the closure (the check then trivially passes).
+        llvmPackages = {
+          llvm = {
+            out = p.emptyDirectory;
+            lib = p.emptyDirectory;
           };
-        }).overrideAttrs
-          (prev: {
+        };
+      };
+      base = pgBase.override (flags // lib.optionalAttrs isMusl muslSurgery);
+      pg =
+        if isMusl then
+          base.overrideAttrs (prev: {
             # Drop -flto (clang-only here): plain binutils `ar` can't index
             # gcc's slim LTO objects in libpgcommon.a/libpgport.a, so linking
             # would fail. Section flags stay for --gc-sections-style dead code
@@ -106,7 +116,9 @@ let
             env = prev.env // {
               CFLAGS = "-fdata-sections -ffunction-sections";
             };
-          });
+          })
+        else
+          base;
     in
     {
       contents = [ (vardeLib.relocate p "varde-postgres-root-${pg.version}" "runtime" pg) ];
