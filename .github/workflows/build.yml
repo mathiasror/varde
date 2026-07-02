@@ -28,7 +28,10 @@ permissions:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Cancel superseded PR runs, but never a half-done main publish: cancelling
+  # mid-run skips the manifest job and leaves GHCR with per-arch tags but no
+  # multi-arch/latest/alias manifest lists.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   REGISTRY: ghcr.io
@@ -128,8 +131,10 @@ jobs:
       # SARIF -> Security tab needs code scanning, which private repos only get
       # with GitHub Advanced Security. Keep it non-fatal so builds still publish;
       # Trivy findings remain in the step log and the SBOM artifact regardless.
+      # `always()` alone spams "Path does not exist" annotations when the build
+      # step failed and the SARIF was never written — only upload what exists.
       - name: Upload SBOM SARIF
-        if: always()
+        if: ${{ !cancelled() && hashFiles('trivy-sbom.sarif') != '' }}
         continue-on-error: true
         uses: github/codeql-action/upload-sarif@v4
         with:
@@ -137,7 +142,7 @@ jobs:
           category: sbom-${{ matrix.image }}-${{ matrix.tag }}-${{ matrix.arch }}
 
       - name: Upload image SARIF
-        if: always()
+        if: ${{ !cancelled() && hashFiles('trivy-image.sarif') != '' }}
         continue-on-error: true
         uses: github/codeql-action/upload-sarif@v4
         with:

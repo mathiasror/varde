@@ -12,12 +12,28 @@
 { pkgs, vardeLib, lib }:
 let
   # `p` is the libc's package set (pkgs for glibc, pkgs.pkgsMusl for musl).
-  redisSpec = p: {
-    contents = [ (vardeLib.relocate p "varde-redis-root-${p.redis.version}" "runtime" p.redis) ];
-    entrypoint = [ "/runtime/bin/redis-server" ];
-    env = [ "PATH=/runtime/bin" ];
-    # no fhs: the nixpkgs redis binary finds its libs via RPATH.
-  };
+  redisSpec =
+    p:
+    let
+      # sd_notify is dead weight in a container (no systemd to talk to), and
+      # systemd's build closure drags in clang/llvm/bpftools/tpm2-tss — on musl
+      # that's hours of from-source compiles that blow the 6h CI job limit.
+      #
+      # On musl the in-sandbox TCL test suite dies instantly ("Error: Connection
+      # reset by peer") on both arches; the same suite passes on glibc, so keep
+      # it there. The image's real runtime proof is CI's docker smoke test + the
+      # e2e example, which exercise the actual redis-server binary.
+      redis =
+        (p.redis.override { withSystemd = false; }).overrideAttrs (
+          lib.optionalAttrs p.stdenv.hostPlatform.isMusl { doCheck = false; }
+        );
+    in
+    {
+      contents = [ (vardeLib.relocate p "varde-redis-root-${redis.version}" "runtime" redis) ];
+      entrypoint = [ "/runtime/bin/redis-server" ];
+      env = [ "PATH=/runtime/bin" ];
+      # no fhs: the nixpkgs redis binary finds its libs via RPATH.
+    };
 in
 {
   description = "Minimal distroless Redis server";

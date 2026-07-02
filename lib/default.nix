@@ -77,12 +77,15 @@ rec {
       ln -s /lib "$out/usr/lib"
     '';
 
-  # Copy a package output under <subdir> (e.g. "runtime") for a clean rootfs.
+  # Expose a package output under <subdir> (e.g. "runtime") for a clean rootfs.
+  # A symlink, not a copy: the copied binaries' RPATHs keep referencing the
+  # original store path, so dockerTools ships the closure regardless — a copy
+  # would put the whole payload in the image twice (python/node/jre near-double).
   relocate =
     pkgs: name: subdir: src:
     pkgs.runCommand name { } ''
-      mkdir -p "$out/${subdir}"
-      cp -a ${src}/. "$out/${subdir}/"
+      mkdir -p "$out"
+      ln -s ${src} "$out/${subdir}"
     '';
 
   # --- libc axis ------------------------------------------------------------

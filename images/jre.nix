@@ -20,11 +20,13 @@ let
   jreSpec = p: jre: {
     contents = [
       (p.runCommand "varde-jre-root-${jre.version}" { } ''
-        mkdir -p "$out/runtime"
+        mkdir -p "$out"
         # Resolve the real JRE home (handles flat or nested nixpkgs layouts) so
         # /runtime is a self-contained Java home with java at /runtime/bin/java.
+        # Symlink, don't copy: the closure ships the store path either way, and
+        # a copy would double the JRE payload in the image (see lib relocate).
         home="$(dirname "$(dirname "$(readlink -f ${jre}/bin/java)")")"
-        cp -a "$home"/. "$out/runtime/"
+        ln -s "$home" "$out/runtime"
       '')
     ];
     entrypoint = [ "/runtime/bin/java" ];
@@ -42,14 +44,21 @@ in
   description = "Minimal distroless Temurin JRE for JVM apps";
   latest = "21"; # current default LTS
   variants = vardeLib.mkVariants pkgs {
-    versions = {
-      # No aarch64 Alpine/musl Temurin for 17 -> glibc-only.
-      "17" = {
-        spec = p: jreSpec p p."temurin-jre-bin-17";
-        libcs = [ "glibc" ];
+    versions =
+      let
+        # gtkSupport wraps java with a desktop LD_LIBRARY_PATH — GTK+3, glib,
+        # cairo and their icu/cups/iso-codes tail, ~240MB of closure a headless
+        # container never dlopens (and hours of from-source GTK builds on musl).
+        jre = p: attr: jreSpec p (p.${attr}.override { gtkSupport = false; });
+      in
+      {
+        # No aarch64 Alpine/musl Temurin for 17 -> glibc-only.
+        "17" = {
+          spec = p: jre p "temurin-jre-bin-17";
+          libcs = [ "glibc" ];
+        };
+        "21" = { spec = p: jre p "temurin-jre-bin-21"; };
+        "25" = { spec = p: jre p "temurin-jre-bin-25"; };
       };
-      "21" = { spec = p: jreSpec p p."temurin-jre-bin-21"; };
-      "25" = { spec = p: jreSpec p p."temurin-jre-bin-25"; };
-    };
   };
 }
