@@ -153,15 +153,18 @@ let
             # OTP apps RabbitMQ cannot load anyway: GUI/dev/test tooling and
             # unused protocol stacks. (No plugin references observer_backend —
             # rabbitmq-diagnostics' top/observer commands use recon/observer_cli
-            # from /rabbitmq/plugins.)
+            # from /rabbitmq/plugins.) NOT `tools`: rabbit_common and horus
+            # both list it in their .app `applications`, so the application
+            # controller refuses to boot without it ({error,{tools,{"no such
+            # file or directory","tools.app"}}}) — it is pure beams, no ports.
             for app in wx debugger observer et megaco diameter snmp ssh ftp \
                        tftp common_test dialyzer edoc erl_docgen jinterface \
-                       odbc reltool tools erl_interface; do
+                       odbc reltool erl_interface; do
               rm -rf lib/"$app"-*
             done
             # Runtime needs beams, not sources/examples — and the stray *.sh
             # helpers (inets CGI, …) are what would drag bash back in.
-            rm -rf lib/*/src lib/*/examples lib/*/doc
+            rm -rf lib/*/src lib/*/examples lib/*/doc lib/*/emacs
             find . -name '*.sh' -delete
 
             # C shims. Both get ROOTDIR/BINDIR/EMU/PROGNAME baked in, so any
