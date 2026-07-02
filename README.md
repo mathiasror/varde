@@ -19,6 +19,7 @@ unprivileged user. Where there's a choice of C library, images default to
 | `varde-jre` | `17`* `21` `25` `latest`(=21) | JVM apps (Java/Kotlin) | `COPY app.jar /app/app.jar` (fat/boot jar) |
 | `varde-python` | `3.11` `3.12` `3.13` `latest`(=3.13) | Python apps | `COPY` interpreter deps + code into `/app` |
 | `varde-node` | `22` `24` `latest`(=24) | Node.js apps | `COPY node_modules` + code into `/app` |
+| `varde-php` | `8.3` `8.4` `8.5` `latest`(=8.5) | PHP apps (cli + `php-fpm`) | `COPY` code + `vendor/` into `/app` |
 
 **Services**
 
@@ -26,6 +27,10 @@ unprivileged user. Where there's a choice of C library, images default to
 | --- | --- | --- | --- |
 | `varde-nginx` | `latest` | static sites (non-root, listens on `:8080`) | `COPY site/ /app/` |
 | `varde-redis` | `latest` | Redis server | run as-is, or pass a `redis.conf` via `CMD` |
+| `varde-postgres` | `16` `17` `18` `latest`(=18) | PostgreSQL server | one-time `initdb` via `--entrypoint` against a volume at `/app`, then run |
+| `varde-mysql` | `8.4`* `latest`(=8.4) | MySQL 8.4 LTS server | one-time `--initialize-insecure` run, then run as-is |
+| `varde-rabbitmq` | `latest` | RabbitMQ broker (shell-free Erlang boot) | run as-is; `rabbitmq.conf` + `enabled_plugins` via `COPY` to `/app` |
+| `varde-memcached` | `latest` | Memcached server | run as-is (`:11211`), or pass flags via `CMD`, e.g. `CMD ["-m", "256"]` |
 
 **Compiled-binary bases** (bring your own binary at `/app/app`)
 
@@ -58,8 +63,16 @@ dependency that assumes glibc. Per-arch tags are libc-qualified, e.g.
 `:21-musl-arm64` or `:3.13-glibc-amd64`.
 
 *`varde-jre:17` is **glibc-only** — Adoptium ships no aarch64 Alpine/musl JRE for
-JDK 17; `:21` and `:25` default to musl. `varde-static` carries no libc (static
-binaries embed their own), so it has no `-musl`/`-glibc` split.
+JDK 17; `:21` and `:25` default to musl. `varde-mysql` is **glibc-only** — musl
+MySQL is not buildable from nixpkgs (its protobuf/abseil pin is marked broken
+on musl), so its bare tags are the glibc build. `varde-static` carries no libc
+(static binaries embed their own), so it has no `-musl`/`-glibc` split.
+
+`varde-postgres` is the **one exception to "no shell"**: it ships a minimal
+static `ash` at `/bin/sh` (Nix's own busybox-sandbox-shell — a single binary,
+no other applets) because PostgreSQL's `initdb` bootstraps through libc
+`popen`/`system`, which hardcode `/bin/sh`. Every other image remains
+shell-free.
 
 ### Every image guarantees
 

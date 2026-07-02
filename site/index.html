@@ -198,6 +198,22 @@
 
           <li class="card reveal">
             <div class="card__top">
+              <h3 class="card__name">varde-php</h3>
+              <ul class="pills"><li>8.3</li><li>8.4</li><li>8.5</li></ul>
+            </div>
+            <p class="card__desc">PHP apps. The interpreter with the stock extension set plus <code class="inline">php-fpm</code> — no composer, no pecl. COPY <code class="inline">vendor/</code> plus your code.</p>
+            <div class="ref">
+              <code id="img-php" class="ref__code"><span class="tk-key">FROM</span> ghcr.io/mathiasror/varde-php:8.5</code>
+              <button class="btn-copy btn-copy--sm" type="button" data-target="img-php" aria-label="Copy varde-php reference">
+                <svg class="ic ic-copy" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" d="M9 9h10v10H9zM5 15V5h10"/></svg>
+                <svg class="ic ic-check" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" d="m5 13 4 4L19 7"/></svg>
+                <span class="vh">Copy</span>
+              </button>
+            </div>
+          </li>
+
+          <li class="card reveal">
+            <div class="card__top">
               <h3 class="card__name">varde-nginx</h3>
               <ul class="pills"><li>latest</li></ul>
             </div>
@@ -221,6 +237,70 @@
             <div class="ref">
               <code id="img-redis" class="ref__code"><span class="tk-key">FROM</span> ghcr.io/mathiasror/varde-redis:latest</code>
               <button class="btn-copy btn-copy--sm" type="button" data-target="img-redis" aria-label="Copy varde-redis reference">
+                <svg class="ic ic-copy" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" d="M9 9h10v10H9zM5 15V5h10"/></svg>
+                <svg class="ic ic-check" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" d="m5 13 4 4L19 7"/></svg>
+                <span class="vh">Copy</span>
+              </button>
+            </div>
+          </li>
+
+          <li class="card reveal">
+            <div class="card__top">
+              <h3 class="card__name">varde-postgres</h3>
+              <ul class="pills"><li>16</li><li>17</li><li>18</li></ul>
+            </div>
+            <p class="card__desc">The PostgreSQL server, distroless and non-root. One explicit <code class="inline">initdb</code> against a volume at <code class="inline">/app</code>, then it runs as-is. Ships a minimal <code class="inline">/bin/sh</code> (ash) — <code class="inline">initdb</code> requires one; the sole exception to no-shell.</p>
+            <div class="ref">
+              <code id="img-postgres" class="ref__code"><span class="tk-key">FROM</span> ghcr.io/mathiasror/varde-postgres:18</code>
+              <button class="btn-copy btn-copy--sm" type="button" data-target="img-postgres" aria-label="Copy varde-postgres reference">
+                <svg class="ic ic-copy" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" d="M9 9h10v10H9zM5 15V5h10"/></svg>
+                <svg class="ic ic-check" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" d="m5 13 4 4L19 7"/></svg>
+                <span class="vh">Copy</span>
+              </button>
+            </div>
+          </li>
+
+          <li class="card reveal">
+            <div class="card__top">
+              <h3 class="card__name">varde-mysql</h3>
+              <ul class="pills"><li>8.4</li></ul>
+            </div>
+            <p class="card__desc">MySQL 8.4 LTS, distroless and non-root. Native no-shell initialization — one <code class="inline">--initialize-insecure</code> run, then serve. glibc-only.</p>
+            <div class="ref">
+              <code id="img-mysql" class="ref__code"><span class="tk-key">FROM</span> ghcr.io/mathiasror/varde-mysql:8.4</code>
+              <button class="btn-copy btn-copy--sm" type="button" data-target="img-mysql" aria-label="Copy varde-mysql reference">
+                <svg class="ic ic-copy" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" d="M9 9h10v10H9zM5 15V5h10"/></svg>
+                <svg class="ic ic-check" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" d="m5 13 4 4L19 7"/></svg>
+                <span class="vh">Copy</span>
+              </button>
+            </div>
+          </li>
+
+          <li class="card reveal">
+            <div class="card__top">
+              <h3 class="card__name">varde-rabbitmq</h3>
+              <ul class="pills"><li>latest</li></ul>
+            </div>
+            <p class="card__desc">RabbitMQ with a shell-free Erlang boot — the VM is exec'd directly; epmd and the escript CLI work without a single script.</p>
+            <div class="ref">
+              <code id="img-rabbitmq" class="ref__code"><span class="tk-key">FROM</span> ghcr.io/mathiasror/varde-rabbitmq:latest</code>
+              <button class="btn-copy btn-copy--sm" type="button" data-target="img-rabbitmq" aria-label="Copy varde-rabbitmq reference">
+                <svg class="ic ic-copy" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" d="M9 9h10v10H9zM5 15V5h10"/></svg>
+                <svg class="ic ic-check" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" d="m5 13 4 4L19 7"/></svg>
+                <span class="vh">Copy</span>
+              </button>
+            </div>
+          </li>
+
+          <li class="card reveal">
+            <div class="card__top">
+              <h3 class="card__name">varde-memcached</h3>
+              <ul class="pills"><li>latest</li></ul>
+            </div>
+            <p class="card__desc">The Memcached server, distroless and non-root. Run as-is or pass flags via <code class="inline">CMD</code> — no config file needed.</p>
+            <div class="ref">
+              <code id="img-memcached" class="ref__code"><span class="tk-key">FROM</span> ghcr.io/mathiasror/varde-memcached:latest</code>
+              <button class="btn-copy btn-copy--sm" type="button" data-target="img-memcached" aria-label="Copy varde-memcached reference">
                 <svg class="ic ic-copy" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" d="M9 9h10v10H9zM5 15V5h10"/></svg>
                 <svg class="ic ic-check" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" d="m5 13 4 4L19 7"/></svg>
                 <span class="vh">Copy</span>

@@ -84,6 +84,10 @@ jobs:
     name: ${{ matrix.image }}:${{ matrix.tag }} (${{ matrix.arch }})
     needs: setup
     runs-on: ${{ matrix.runner }}
+    # Cached builds finish in minutes; the ceiling exists for cache-cold musl
+    # compiles (icu, erlang, postgres) while still cutting off wedged runners
+    # well before the 6h default.
+    timeout-minutes: 240
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.setup.outputs.matrix) }}
@@ -181,10 +185,49 @@ jobs:
                     printf '#include <stdio.h>\nint main(){puts("varde ok");return 0;}\n' > hello.c
                     musl-gcc -o app hello.c
                     docker run --rm -v "$PWD/app:/app/app:ro" "$ref" | grep -q "varde ok" ;;
-            redis)  docker run --rm -d --name vr "$ref" >/dev/null
+            # Detached services run WITHOUT --rm: a boot crash must leave the
+            # container behind so the failure branch's `docker logs` has
+            # something to show (rabbitmq's first failure self-deleted its
+            # evidence). Both exit paths docker rm -f explicitly.
+            redis)  docker run -d --name vr "$ref" >/dev/null
                     for _ in $(seq 1 20); do docker exec vr /runtime/bin/redis-cli ping 2>/dev/null | grep -q PONG && break; sleep 0.5; done
                     docker exec vr /runtime/bin/redis-cli ping | grep -q PONG || { docker logs vr; docker rm -f vr; exit 1; }
                     echo "varde ok"; docker rm -f vr >/dev/null ;;
+            php)    docker run --rm --entrypoint /runtime/bin/php "$ref" -r 'echo "varde ok\n";' | grep -q "varde ok" ;;
+            # One-time initdb against a volume (the documented contract), then serve.
+            postgres) docker volume create vpg >/dev/null
+                    docker run --rm -v vpg:/app --entrypoint /runtime/bin/initdb "$ref" -U postgres --auth=trust
+                    docker run -d --name vp -v vpg:/app "$ref" >/dev/null
+                    for _ in $(seq 1 40); do docker exec vp /runtime/bin/pg_isready -U postgres 2>/dev/null | grep -q "accepting connections" && break; sleep 0.5; done
+                    docker exec vp /runtime/bin/psql -U postgres -tAc "SELECT 1" | grep -qx 1 || { docker logs vp; docker rm -f vp; exit 1; }
+                    echo "varde ok"; docker rm -f vp >/dev/null; docker volume rm vpg >/dev/null ;;
+            # Native no-shell init (mysqld --initialize-insecure), then serve.
+            mysql)  docker volume create vmy >/dev/null
+                    docker run --rm -v vmy:/app "$ref" --initialize-insecure
+                    docker run -d --name vm -v vmy:/app "$ref" >/dev/null
+                    for _ in $(seq 1 60); do docker exec vm /runtime/bin/mysqladmin -u root ping 2>/dev/null | grep -q alive && break; sleep 0.5; done
+                    docker exec vm /runtime/bin/mysql -u root -e 'SELECT 1' >/dev/null || { docker logs vm; docker rm -f vm; exit 1; }
+                    echo "varde ok"; docker rm -f vm >/dev/null; docker volume rm vmy >/dev/null ;;
+            # CLI escripts are on PATH (kernel shebang -> in-image ELF, no shell).
+            rabbitmq) docker run -d --name vq "$ref" >/dev/null
+                    ok=1; for _ in $(seq 1 60); do docker exec vq rabbitmq-diagnostics ping >/dev/null 2>&1 && { ok=0; break; }; sleep 1; done
+                    [ "$ok" -eq 0 ] || { docker logs vq; docker rm -f vq; exit 1; }
+                    echo "varde ok"; docker rm -f vq >/dev/null ;;
+            # No client binary in the image and no shell: probe from the runner
+            # over TCP with bash's /dev/tcp.
+            memcached) docker run -d --name vmc -p 127.0.0.1:18211:11211 "$ref" >/dev/null
+                    ok=1
+                    for _ in $(seq 1 40); do
+                      if exec 3<>/dev/tcp/127.0.0.1/18211 2>/dev/null; then
+                        printf 'stats\r\nquit\r\n' >&3
+                        grep -q "STAT uptime" <&3 && ok=0
+                        exec 3>&- 3<&- || true
+                        [ "$ok" -eq 0 ] && break
+                      fi
+                      sleep 0.5
+                    done
+                    [ "$ok" -eq 0 ] || { docker logs vmc; docker rm -f vmc; exit 1; }
+                    echo "varde ok"; docker rm -f vmc >/dev/null ;;
             nginx)  echo '<h1>varde ok</h1>' > index.html
                     docker run --rm -d --name vn -p 18080:8080 -v "$PWD/index.html:/app/index.html:ro" "$ref" >/dev/null
                     for _ in $(seq 1 20); do curl -fsS localhost:18080 2>/dev/null | grep -q "varde ok" && break; sleep 0.5; done
