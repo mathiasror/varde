@@ -14,8 +14,26 @@ name: build-image
 on:
   push:
     branches: [main]
+    # Build only when image inputs change: doc/site-only pushes skip the whole
+    # matrix (pages.yml covers site/). The weekly cron below is unaffected —
+    # schedule events ignore path filters — and workflow_dispatch remains for a
+    # manual full run. Keep both lists in sync (Actions YAML has no anchors).
+    paths:
+      - "images/**"
+      - "lib/**"
+      - "flake.nix"
+      - "flake.lock"
+      - ".github/workflows/build.yml"
   pull_request:
     branches: [main]
+    # NOTE: if these jobs ever become *required* status checks, a path-filtered
+    # PR would wait on them forever — keep required checks in sync with this.
+    paths:
+      - "images/**"
+      - "lib/**"
+      - "flake.nix"
+      - "flake.lock"
+      - ".github/workflows/build.yml"
   workflow_dispatch:
   schedule:
     - cron: "0 6 * * 1" # weekly rebuild for fresh CVE fixes
@@ -318,6 +336,13 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # cosign runs once per unique digest below; build it once from the repo's
+      # pinned nixpkgs instead of paying a `nix run` evaluation per signature.
+      - name: Install cosign (pinned via flake.lock)
+        run: |
+          nix build --inputs-from . nixpkgs#cosign -o "$RUNNER_TEMP/cosign"
+          echo "$RUNNER_TEMP/cosign/bin" >> "$GITHUB_PATH"
+
       - name: Assemble manifest lists (libc tags, bare/latest aliases, image aliases)
         env:
           OWNER: ${{ github.repository_owner }}
@@ -327,22 +352,25 @@ jobs:
         run: |
           owner=$(echo "$OWNER" | tr '[:upper:]' '[:lower:]'); reg="${REGISTRY}"
           imgref(){ echo "${reg}/${owner}/varde-$1"; }
-          # Create the multi-arch list, then keyless-sign the resulting index so
-          # `cosign verify <tag>` works for anything a user pulls. (Per-arch SBOM
-          # attestations live on the child digests, attached in the build job.)
-          create(){
-            docker buildx imagetools create -t "$1" "$2" "$3"
-            d=$(docker buildx imagetools inspect "$1" --format '{{.Manifest.Digest}}')
-            nix run --inputs-from . nixpkgs#cosign -- sign --yes "${1%:*}@${d}"
-          }
           hastag(){ printf '%s' "$MATRIX" | jq -e --arg im "$1" --arg t "$2" \
             '.include[]|select(.image==$im and .tag==$t)' >/dev/null; }
+
+          # Three phases: plan (serial, cheap) -> create (parallel: every list
+          # is assembled from per-arch tags, so no list depends on another) ->
+          # sign (deduplicated: bare-version, :latest, and alias tags assemble
+          # byte-identical indexes, so one keyless signature per repo@digest
+          # covers them all — cosign signs the digest, and `cosign verify <tag>`
+          # resolves the tag to that digest first). Per-arch SBOM attestations
+          # live on the child digests, attached in the build job.
+          planfile="$RUNNER_TEMP/manifest-plan"
+          : > "$planfile"
+          plan(){ printf '%s %s %s\n' "$1" "$2" "$3" >> "$planfile"; }
 
           # 1) One multi-arch list per image:matrix-tag (concrete libc-qualified or
           #    plain-'latest' tags, e.g. jre:21-musl, redis:latest-glibc, static:latest).
           printf '%s' "$MATRIX" | jq -r '.include[]|"\(.image) \(.tag)"' | sort -u \
           | while read -r image tag; do
-              i=$(imgref "$image"); create "${i}:${tag}" "${i}:${tag}-amd64" "${i}:${tag}-arm64"
+              i=$(imgref "$image"); plan "${i}:${tag}" "${i}:${tag}-amd64" "${i}:${tag}-arm64"
             done
 
           # 2) For libc-axis images (tags carry -musl/-glibc): bare-version aliases to
@@ -356,25 +384,55 @@ jobs:
               | sed -E 's/-(musl|glibc)$//' | sort -u \
               | while read -r ver; do
                   if hastag "$image" "${ver}-musl"; then d=musl; else d=glibc; fi
-                  create "${i}:${ver}" "${i}:${ver}-${d}-amd64" "${i}:${ver}-${d}-arm64"
+                  plan "${i}:${ver}" "${i}:${ver}-${d}-amd64" "${i}:${ver}-${d}-arm64"
                 done
             lv=$(printf '%s' "$LATEST" | jq -r --arg im "$image" '.[$im] // empty')
             [ -n "$lv" ] || continue
             if hastag "$image" "${lv}-musl"; then d=musl; else d=glibc; fi
-            create "${i}:latest" "${i}:${lv}-${d}-amd64" "${i}:${lv}-${d}-arm64"
+            plan "${i}:latest" "${i}:${lv}-${d}-amd64" "${i}:${lv}-${d}-arm64"
             if hastag "$image" "${lv}-glibc"; then
-              create "${i}:latest-glibc" "${i}:${lv}-glibc-amd64" "${i}:${lv}-glibc-arm64"
+              plan "${i}:latest-glibc" "${i}:${lv}-glibc-amd64" "${i}:${lv}-glibc-arm64"
             fi
           done
 
           # 3) Image aliases (varde-go -> varde-static, varde-rust -> varde-glibc):
-          #    mirror the source's per-arch digests under the alias name + :latest.
+          #    mirror every source tag, and point :latest at the source's *declared*
+          #    latest tag — not once per source tag, which duplicated the create/sign
+          #    and would let an arbitrary tag win if a source ever grew a second one.
           printf '%s' "$ALIASES" | jq -r 'to_entries[]|"\(.key) \(.value)"' \
           | while read -r alias src; do
               a=$(imgref "$alias"); si=$(imgref "$src")
               for t in $(printf '%s' "$MATRIX" | jq -r --arg s "$src" \
                   '.include[]|select(.image==$s)|.tag' | sort -u); do
-                create "${a}:${t}" "${si}:${t}-amd64" "${si}:${t}-arm64"
-                create "${a}:latest" "${si}:${t}-amd64" "${si}:${t}-arm64"
+                plan "${a}:${t}" "${si}:${t}-amd64" "${si}:${t}-arm64"
               done
+              lv=$(printf '%s' "$LATEST" | jq -r --arg im "$src" '.[$im] // empty')
+              [ -n "$lv" ] || continue
+              if hastag "$src" "$lv"; then sfx="$lv"                  # plain tag (static:latest)
+              elif hastag "$src" "${lv}-musl"; then sfx="${lv}-musl"  # default libc
+              else sfx="${lv}-glibc"; fi
+              plan "${a}:latest" "${si}:${sfx}-amd64" "${si}:${sfx}-arm64"
             done
+
+          # Identical replans (e.g. redis:latest is both a matrix tag and the
+          # :latest of the sole version) collapse under sort -u; the same tag
+          # planned with DIFFERENT children would be a generator bug — fail
+          # loudly rather than race two writers in the parallel phase.
+          sort -u "$planfile" -o "$planfile"
+          [ -s "$planfile" ] || { echo "empty manifest plan" >&2; exit 1; }
+          dups=$(awk '{print $1}' "$planfile" | sort | uniq -d)
+          [ -z "$dups" ] || { echo "conflicting manifest plans for: $dups" >&2; exit 1; }
+
+          create_one(){
+            docker buildx imagetools create -t "$1" "$2" "$3"
+            d=$(docker buildx imagetools inspect "$1" --format '{{.Manifest.Digest}}')
+            printf '%s@%s\n' "${1%:*}" "$d" >> "$SIGNLIST"
+          }
+          export -f create_one
+          export SIGNLIST="$RUNNER_TEMP/sign-list"
+          : > "$SIGNLIST"
+          xargs -P 8 -n 3 bash -c 'set -euo pipefail; create_one "$@"' _ < "$planfile"
+
+          sort -u "$SIGNLIST" -o "$SIGNLIST"
+          echo "created $(wc -l < "$planfile") manifest lists; signing $(wc -l < "$SIGNLIST") unique digests"
+          xargs -P 4 -n 1 cosign sign --yes < "$SIGNLIST"
