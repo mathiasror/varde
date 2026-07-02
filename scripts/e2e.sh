@@ -18,22 +18,25 @@ ONLY=("$@")
 
 # name | dir | baseAttr (nix) | baseName (varde-<name>) | smoke | budgetMB
 #   smoke: stdout:<needle> | http:<cport>:<path>:<needle> | redis | postgres | mysql | memcached
+#   budgetMB: measured size + ~15% from the first green run (2026-07-02). If one
+#   trips after a deliberate runtime addition, re-derive it the same way; if it
+#   trips unexpectedly, investigate the closure regression — that's its job.
 read -r -d '' TABLE <<'EOF' || true
-go-simple|examples/go/simple|image-static-latest|static|stdout:varde ok|30
+go-simple|examples/go/simple|image-static-latest|static|stdout:varde ok|10
 rust-simple|examples/rust/simple|image-glibc-latest|glibc|stdout:varde ok|55
 python-simple|examples/python/simple|image-python-3_13-musl|python|stdout:varde ok|185
 python-requirements-venv|examples/python/requirements-venv|image-python-3_13-musl|python|stdout:varde ok|190
 python-uv|examples/python/uv|image-python-3_13-musl|python|stdout:varde ok|190
 node-simple|examples/node/simple|image-node-24-musl|node|stdout:varde ok|215
-node-express|examples/node/express|image-node-24-musl|node|http:8080:/:varde ok|230
-jre-spring-boot|examples/jre/spring-boot-gradle|image-jre-21-musl|jre|http:8080:/:varde ok|360
-php-simple|examples/php/simple|image-php-8_5-musl|php|stdout:varde ok|260
-nginx-static-site|examples/nginx/static-site|image-nginx-latest-musl|nginx|http:8080:/:varde ok|90
-redis-simple|examples/redis/simple|image-redis-latest-musl|redis|redis|90
-postgres-simple|examples/postgres/simple|image-postgres-18-musl|postgres|postgres|180
-mysql-simple|examples/mysql/simple|image-mysql-8_4-glibc|mysql|mysql|400
-rabbitmq-simple|examples/rabbitmq/simple|image-rabbitmq-latest-musl|rabbitmq|http:15672:/:RabbitMQ|180
-memcached-simple|examples/memcached/simple|image-memcached-latest-musl|memcached|memcached|25
+node-express|examples/node/express|image-node-24-musl|node|http:8080:/:varde ok|220
+jre-spring-boot|examples/jre/spring-boot-gradle|image-jre-21-musl|jre|http:8080:/:varde ok|320
+php-simple|examples/php/simple|image-php-8_5-musl|php|stdout:varde ok|230
+nginx-static-site|examples/nginx/static-site|image-nginx-latest-musl|nginx|http:8080:/:varde ok|30
+redis-simple|examples/redis/simple|image-redis-latest-musl|redis|redis|35
+postgres-simple|examples/postgres/simple|image-postgres-18-musl|postgres|postgres|115
+mysql-simple|examples/mysql/simple|image-mysql-8_4-glibc|mysql|mysql|385
+rabbitmq-simple|examples/rabbitmq/simple|image-rabbitmq-latest-musl|rabbitmq|http:15672:/:RabbitMQ|105
+memcached-simple|examples/memcached/simple|image-memcached-latest-musl|memcached|memcached|15
 EOF
 
 CONTAINERS=()
