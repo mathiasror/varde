@@ -27,15 +27,18 @@
 # seams: `overrideCC` (only used to construct that clang stdenv; returning the
 # set's default gcc stdenv means the clang argument is never even evaluated) and
 # `llvmPackages` (with JIT off only forced through the disallowedRequisites
-# list, so a stub keeps llvm out of the build closure). `-flto` is then dropped
-# from CFLAGS because plain binutils `ar` can't index gcc's slim LTO archives
-# (libpgcommon.a); gcc + `-fdata-sections -ffunction-sections` without LTO is
-# exactly how nixpkgs 24.11 built these same split outputs, and the dev/doc/man
-# reference hygiene is handled by remove-references-to + archive-member
-# selection, not by LTO.
+# list, so a stub keeps llvm out of the build closure). `-flto` is then swapped
+# for `-fmerge-constants -Wl,--gc-sections` — verbatim the non-clang arm of
+# these same CFLAGS in nixpkgs 24.11 — because plain binutils `ar` can't index
+# gcc's slim LTO archives (libpgcommon.a). The link-time `--gc-sections` is
+# load-bearing, not an optimization: libpgcommon/libpgport embed every output's
+# path (the pg_config table) into every binary and shared library, and only
+# section-GC strips the unused ones back out. Without it $lib/lib/*.so keeps a
+# $dev path, and since $dev refers back to $lib (pg_config.env, pgxs) the build
+# aborts with "cycle detected ... output 'dev' from output 'lib'".
 #
-# The init problem: distroless means no shell, so the docker-library
-# entrypoint-script dance (initdb-on-first-boot) is impossible. The honest
+# The init problem: there is no docker-library entrypoint-script dance
+# (initdb-on-first-boot) — no coreutils to write one against. The honest
 # contract is two explicit steps sharing a volume mounted at /app (the image's
 # /app is owned 1000:1000, so a fresh named volume inherits that ownership):
 #   1) one-time:  docker run --rm -i -v pgdata:/app \
@@ -45,6 +48,21 @@
 #                 environment; LANG/LC_ALL=C.UTF-8 give a UTF8 cluster)
 #   2) normal:    docker run -d -p 5432:5432 -v pgdata:/app <img>
 # See examples/postgres/simple/ for the full walk-through.
+#
+# One concession to PostgreSQL's design: initdb drives every child `postgres`
+# through popen(3)/system(3) — the sibling version probe (`postgres -V` in
+# find_other_exec, src/common/exec.c), the `--boot` bootstrap run and the
+# single-user post-bootstrap runs are all shell command LINES (quoting,
+# redirections), and libc popen/system hardcode /bin/sh. In a shell-less image
+# initdb dies on the very first probe with the misleading
+#   initdb: error: program "postgres" is needed by initdb but was not found
+#   in the same directory as "/runtime/bin/initdb"
+# (find_other_exec folds popen's ENOENT into "not found"; both glibc and musl
+# popen report the missing /bin/sh via posix_spawn). So this image — alone
+# among varde images — ships a /bin/sh: busybox-sandbox-shell, the small
+# static ash-only busybox that Nix itself mounts as /bin/sh in every Linux
+# build sandbox. One self-contained binary, no other applets, no coreutils;
+# the server still runs non-root with no package manager in sight.
 #
 # Entrypoint choices (operational flags live in the ENTRYPOINT so a user CMD
 # can't accidentally drop them; later command-line -c flags override earlier
@@ -61,9 +79,11 @@
 # No default CMD: `docker run <img> -c work_mem=64MB` appends straight to the
 # entrypoint, and PGDATA supplies the data directory.
 #
-# Caveat: initdb's `locale -a` import of libc system collations silently yields
-# nothing here (popen needs a shell); C/POSIX/C.UTF-8 plus ICU collations
-# (icuSupport is on — `--locale-provider=icu`) cover the container use case.
+# Caveat: the backend's `locale -a` import of libc system collations stays
+# minimal here — on musl nixpkgs applies Alpine's dont-use-locale-a patch (no
+# `locale -a` at all), and on glibc the wrapped initdb finds only glibc's own
+# C/POSIX/C.utf8 (no locale archive in the image); ICU collations (icuSupport
+# is on — `--locale-provider=icu`) cover the container use case.
 #
 # Built for both libcs: the bare tag (e.g. :18) is musl; opt into glibc with
 # :18-glibc. :latest is the newest stable major.
@@ -107,21 +127,35 @@ let
       pg =
         if isMusl then
           base.overrideAttrs (prev: {
-            # Drop -flto (clang-only here): plain binutils `ar` can't index
-            # gcc's slim LTO objects in libpgcommon.a/libpgport.a, so linking
-            # would fail. Section flags stay for --gc-sections-style dead code
-            # removal, matching the pre-clang nixpkgs build of these outputs.
+            # Swap clang's -flto for nixpkgs 24.11's gcc arm of these exact
+            # CFLAGS: plain binutils `ar` can't index gcc's slim LTO objects in
+            # libpgcommon.a/libpgport.a, so -flto would break the link — but
+            # the section flags alone are NOT a substitute. Without link-time
+            # `-Wl,--gc-sections` the pg_config path table survives into
+            # $lib/lib/*.so, whose $dev reference then trips Nix's
+            # "cycle detected ... output 'dev' from output 'lib'" (see header).
             # (No images/redis.nix-style musl check-skip needed: generic.nix
             # already disables the musl installcheck itself.)
             env = prev.env // {
-              CFLAGS = "-fdata-sections -ffunction-sections";
+              CFLAGS = "-fdata-sections -ffunction-sections -fmerge-constants -Wl,--gc-sections";
             };
           })
         else
           base;
+      # initdb cannot run without /bin/sh (see header: popen/system for the
+      # version probe and every bootstrap `postgres` run). The ash-only static
+      # busybox Nix uses as its sandbox shell — a single self-contained binary
+      # (closure: itself), the same role on both libcs.
+      sh = p.runCommand "varde-postgres-sh" { } ''
+        mkdir -p "$out/bin"
+        ln -s ${p.busybox-sandbox-shell}/bin/busybox "$out/bin/sh"
+      '';
     in
     {
-      contents = [ (vardeLib.relocate p "varde-postgres-root-${pg.version}" "runtime" pg) ];
+      contents = [
+        (vardeLib.relocate p "varde-postgres-root-${pg.version}" "runtime" pg)
+        sh
+      ];
       entrypoint = [
         "/runtime/bin/postgres"
         "-c"
