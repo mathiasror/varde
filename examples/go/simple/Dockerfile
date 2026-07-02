@@ -31,8 +31,8 @@ FROM golang:1-bookworm AS build
 WORKDIR /src
 
 # Copy module metadata first so dependency resolution is cached independently
-# of source changes. (This trivial example has no deps, but it models the
-# pattern real projects rely on.)
+# of source changes. (This trivial example has no deps and thus no go.sum; a
+# real project copies both: `COPY go.mod go.sum ./`.)
 COPY go.mod ./
 RUN go mod download
 

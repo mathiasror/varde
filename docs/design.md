@@ -22,7 +22,7 @@ library, images default to musl (smaller, fewer CVEs) with glibc opt-in.
 | --- | --- |
 | User | `1000:1000` (`app`, non-root) |
 | Working directory | `/app` (owned by `1000:1000`) |
-| Shell / package manager | none |
+| Shell / package manager | none — sole exception: postgres ships a minimal static `/bin/sh` because `initdb` bootstraps through libc `popen`/`system` |
 | TLS | CA bundle at `/etc/ssl/certs/ca-certificates.crt` |
 | Timezones | tzdata at `/usr/share/zoneinfo` |
 | Writable paths | `/app`, `/tmp` (sticky) |
@@ -32,9 +32,10 @@ means a self-contained artifact: a fat JAR, a static or dynamically-linked
 binary, or interpreted code plus its already-installed dependencies.
 
 Three kinds of image share this contract: **language runtimes** (jre, python,
-node), **services** that package a nixpkgs binary plus its runtime closure
-(nginx, redis), and **compiled-binary bases** that carry only the scaffolding and
-a libc layout (static, glibc, musl) for a binary you drop at `/app/app`.
+node, php), **services** that package a nixpkgs binary plus its runtime closure
+(nginx, redis, postgres, mysql, rabbitmq, memcached), and **compiled-binary
+bases** that carry only the scaffolding and a libc layout (static, glibc, musl)
+for a binary you drop at `/app/app`.
 
 ## libc axis
 
@@ -49,7 +50,9 @@ runtime is a function of the libc's package set (`pkgs` for glibc,
 `pkgs.pkgsMusl` for musl), and `vardeLib.mkVariants` crosses each version with
 the available libcs, emitting `<tag>-musl` and `<tag>-glibc`. A version can opt
 out of one libc (e.g. `varde-jre:17` is glibc-only — Adoptium ships no aarch64
-Alpine/musl JRE for JDK 17). The compiled-binary `static` base carries no libc.
+Alpine/musl JRE for JDK 17; `varde-mysql` is glibc-only — its protobuf/abseil
+pin is marked broken on musl in nixpkgs). The compiled-binary `static` base
+carries no libc.
 
 ## Module framework
 
@@ -121,8 +124,9 @@ rebuild against the latest nixpkgs picks up CVE fixes.
 A separate `e2e.yml` workflow builds every example in `examples/<image>/<variant>/`
 on top of a locally-built base, smoke-tests that the app runs, and asserts a
 per-image size budget (`scripts/e2e.sh`). musl service/runtime variants that are
-not in the public Nix cache build from source there; Actions minutes are free on
-public repos.
+not in the public Nix cache come from the shared `varde` Cachix cache that
+`build.yml` populates (compiled from source only on a cache-cold first run);
+Actions minutes are free on public repos.
 
 ## Non-goals
 

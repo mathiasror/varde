@@ -29,7 +29,8 @@ ARG BASE_IMAGE=ghcr.io/mathiasror/varde-node:24
 # MANDATORY: the final runtime stage is FROM ${BASE_IMAGE}.
 FROM ${BASE_IMAGE}
 
-# The base already sets WORKDIR /app, USER 1000:1000, ENTRYPOINT ["node"] and
-# CMD ["/app/main.js"]. We only need to put main.js where CMD expects it, and
-# the container will run `node /app/main.js` on its own.
+# The base already sets WORKDIR /app, USER 1000:1000,
+# ENTRYPOINT ["/runtime/bin/node"] and CMD ["/app/main.js"]. We only need to put
+# main.js where CMD expects it, and the container runs `node /app/main.js` on
+# its own.
 COPY main.js /app/main.js
