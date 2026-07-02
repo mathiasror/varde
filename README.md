@@ -118,8 +118,8 @@ just let CI build them). On a Linux host:
 nix build .#image-jre-21-musl       # -> ./result  (a Docker-format image tarball)
 nix build .#image-python-3_12-glibc # note: dots -> underscores, libc is part of the attr
 docker load < result
-# or push without a daemon:
-skopeo copy docker-archive:result docker://ghcr.io/mathiasror/varde-jre:21-musl-amd64
+# or push to your own namespace without a daemon:
+skopeo copy docker-archive:result docker://ghcr.io/<your-user>/varde-jre:21-musl-amd64
 ```
 
 List everything that exists: `nix eval --json .#ciMatrix` (each entry carries its
@@ -224,6 +224,14 @@ nixpkgs so published images pick up CVE fixes even when this repo is unchanged.
 > each `varde-*` package to **Public** once (GHCR → the package → *Package
 > settings* → *Change visibility*) and connect it to this repository. Only then
 > does the "just `docker pull`, no token" promise hold.
+
+> **Publish checklist:** after a run on `main`,
+> - confirm the **manifest** job ran (not skipped) — a run that fails or is
+>   cancelled after **build** leaves GHCR with per-arch tags but no manifest
+>   lists, and every documented `FROM` breaks;
+> - confirm an anonymous `docker pull ghcr.io/mathiasror/varde-jre:latest` (any
+>   bare tag) resolves;
+> - first publish only: flip each `varde-*` package to **Public** (previous note).
 
 ## Adding a new image
 
