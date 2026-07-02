@@ -159,6 +159,15 @@ rec {
       extraCommands = ''
         mkdir -p app tmp
         chmod 1777 tmp
+        # Contents are merged by symlink, leaving the identity files pointing at
+        # absolute /nix/store paths. Docker 29 resolves them via Go's os.Root,
+        # which rejects absolute symlinks (exec user lookup breaks), so
+        # materialize them as regular files.
+        for f in etc/passwd etc/group etc/nsswitch.conf; do
+          if [ -L "$f" ]; then
+            cp --remove-destination "$(readlink -f "$f")" "$f"
+          fi
+        done
       '';
       fakeRootCommands = ''
         chown -R 1000:1000 ./app
