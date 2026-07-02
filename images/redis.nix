@@ -18,7 +18,15 @@ let
       # sd_notify is dead weight in a container (no systemd to talk to), and
       # systemd's build closure drags in clang/llvm/bpftools/tpm2-tss — on musl
       # that's hours of from-source compiles that blow the 6h CI job limit.
-      redis = p.redis.override { withSystemd = false; };
+      #
+      # On musl the in-sandbox TCL test suite dies instantly ("Error: Connection
+      # reset by peer") on both arches; the same suite passes on glibc, so keep
+      # it there. The image's real runtime proof is CI's docker smoke test + the
+      # e2e example, which exercise the actual redis-server binary.
+      redis =
+        (p.redis.override { withSystemd = false; }).overrideAttrs (
+          lib.optionalAttrs p.stdenv.hostPlatform.isMusl { doCheck = false; }
+        );
     in
     {
       contents = [ (vardeLib.relocate p "varde-redis-root-${redis.version}" "runtime" redis) ];
