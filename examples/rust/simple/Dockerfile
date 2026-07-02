@@ -3,9 +3,9 @@
 # varde example: a dynamically-linked Rust binary on the varde-glibc base.
 # -----------------------------------------------------------------------------
 # WHY varde-glibc here?
-#   A default `cargo build` on the `rust:1-bookworm` image targets
-#   `x86_64-unknown-linux-gnu`, i.e. it links DYNAMICALLY against glibc. That
-#   binary needs a glibc runtime, so we run it on varde-glibc (a.k.a.
+#   A default `cargo build` on the `rust:1-bookworm` image targets the host's
+#   `<arch>-unknown-linux-gnu` triple, i.e. it links DYNAMICALLY against glibc.
+#   That binary needs a glibc runtime, so we run it on varde-glibc (a.k.a.
 #   varde-rust).
 #
 #   If you instead produced a fully-static musl binary with

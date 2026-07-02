@@ -8,11 +8,13 @@
 *.sarif
 sbom.csv
 
-# direnv / editor cruft
+# direnv / editor / agent cruft
 /.direnv/
 .DS_Store
 .idea/
 .vscode/
+.claude/
+.playwright-mcp/
 
 # example build artifacts (lockfiles ARE committed; build output is not)
 examples/**/node_modules/

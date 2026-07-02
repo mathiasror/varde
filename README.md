@@ -105,8 +105,13 @@ under [`examples/`](examples/) — each takes an `ARG BASE_IMAGE`, so you can
 - **Node** — [`simple`](examples/node/simple/), [`express`](examples/node/express/) (production-shaped)
 - **Go** — [`examples/go/simple/`](examples/go/simple/) (static, on `varde-static`)
 - **Rust** — [`examples/rust/simple/`](examples/rust/simple/) (glibc, on `varde-glibc`)
+- **PHP** — [`examples/php/simple/`](examples/php/simple/) (`php-fpm` behind nginx, or cli)
 - **nginx** — [`examples/nginx/static-site/`](examples/nginx/static-site/)
 - **redis** — [`examples/redis/simple/`](examples/redis/simple/)
+- **postgres** — [`examples/postgres/simple/`](examples/postgres/simple/) (explicit `initdb`, volume at `/app`)
+- **mysql** — [`examples/mysql/simple/`](examples/mysql/simple/) (`--initialize-insecure`, then serve)
+- **rabbitmq** — [`examples/rabbitmq/simple/`](examples/rabbitmq/simple/) (config + plugins via `COPY`)
+- **memcached** — [`examples/memcached/simple/`](examples/memcached/simple/)
 
 The shortest possible case (a static binary):
 
@@ -171,9 +176,9 @@ in the build log and the SBOM is uploaded as a build artifact. Scanning is
 visible); enforce hard gates in your *app* image, where you control the
 dependency set.
 
-> SARIF upload to the GitHub **Security** tab is wired up but non-fatal: on a
-> **private** repo it needs GitHub Advanced Security, so it's skipped gracefully.
-> Make the repo public (or enable GHAS) and the Security-tab integration lights up.
+> SARIF upload to the GitHub **Security** tab is wired up but non-fatal — scan
+> findings land under **Security → Code scanning** per image/arch. (On a private
+> fork this needs GitHub Advanced Security and is skipped gracefully.)
 
 ## Supply chain: signatures, SBOM & provenance
 
@@ -192,11 +197,14 @@ cosign verify \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   ghcr.io/mathiasror/varde-jre:21
 
-# Verify SLSA build provenance (built by this repo's workflow):
-gh attestation verify oci://ghcr.io/mathiasror/varde-jre:21 --owner mathiasror
-
-# The SBOM attestation is per-arch — resolve a platform digest, then verify it:
+# Provenance and SBOM attestations live on the per-arch digests (the things
+# actually built) — resolve a platform digest first:
 d=$(crane digest ghcr.io/mathiasror/varde-jre:21 --platform linux/amd64)
+
+# Verify SLSA build provenance (built by this repo's workflow):
+gh attestation verify "oci://ghcr.io/mathiasror/varde-jre@${d}" --owner mathiasror
+
+# Verify the CycloneDX SBOM attestation (and extract the SBOM):
 cosign verify-attestation --type cyclonedx \
   --certificate-identity-regexp '^https://github.com/mathiasror/varde/' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
@@ -232,10 +240,12 @@ nixpkgs so published images pick up CVE fixes even when this repo is unchanged.
 > **Cache setup, one-time:** create a free open-source cache named `varde` at
 > [cachix.org](https://cachix.org) (keep it **public** so fork PRs and end users
 > can read it), then add its write token as the repo secret `CACHIX_AUTH_TOKEN`
-> (Settings → Secrets and variables → Actions). Without the secret, builds still
-> work — they just don't get the cache speedup.
+> (Settings → Secrets and variables → Actions). Reads are anonymous on a public
+> cache — the token is only needed to *push*; without it builds still work and
+> still pull the cache, they just can't refill it.
 
-> **First publish, one-time step:** packages pushed by Actions are created
+> **First publish, one-time step** *(done for `ghcr.io/mathiasror` — this
+> applies if you fork and publish your own)*: packages pushed by Actions are created
 > **private** by default — even from a public repo — so anonymous `docker pull`
 > would return 401 until you flip them. After the first successful build, set
 > each `varde-*` package to **Public** once (GHCR → the package → *Package

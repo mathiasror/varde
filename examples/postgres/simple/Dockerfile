@@ -40,7 +40,9 @@
 # MANDATORY: the very first instruction pins a real, public default base tag.
 # An e2e harness overrides this with a locally-built image via
 # `--build-arg BASE_IMAGE=...`, but the default must be a working public tag.
-ARG BASE_IMAGE=ghcr.io/mathiasror/varde-postgres:latest
+# Pinned to a major version (not :latest): the initdb'd data directory is
+# major-version-locked, so a silently moving base would strand the volume.
+ARG BASE_IMAGE=ghcr.io/mathiasror/varde-postgres:18
 
 # --- Runtime stage (single stage — no builder needed) ------------------------
 # MANDATORY: the only stage is FROM ${BASE_IMAGE}.
