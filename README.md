@@ -68,6 +68,12 @@ MySQL is not buildable from nixpkgs (its protobuf/abseil pin is marked broken
 on musl), so its bare tags are the glibc build. `varde-static` carries no libc
 (static binaries embed their own), so it has no `-musl`/`-glibc` split.
 
+`varde-postgres` is the **one exception to "no shell"**: it ships a minimal
+static `ash` at `/bin/sh` (Nix's own busybox-sandbox-shell — a single binary,
+no other applets) because PostgreSQL's `initdb` bootstraps through libc
+`popen`/`system`, which hardcode `/bin/sh`. Every other image remains
+shell-free.
+
 ### Every image guarantees
 
 | Property | Value |

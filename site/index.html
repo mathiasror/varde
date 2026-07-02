@@ -249,7 +249,7 @@
               <h3 class="card__name">varde-postgres</h3>
               <ul class="pills"><li>16</li><li>17</li><li>18</li></ul>
             </div>
-            <p class="card__desc">The PostgreSQL server, distroless and non-root. One explicit <code class="inline">initdb</code> against a volume at <code class="inline">/app</code>, then it runs as-is.</p>
+            <p class="card__desc">The PostgreSQL server, distroless and non-root. One explicit <code class="inline">initdb</code> against a volume at <code class="inline">/app</code>, then it runs as-is. Ships a minimal <code class="inline">/bin/sh</code> (ash) — <code class="inline">initdb</code> requires one; the sole exception to no-shell.</p>
             <div class="ref">
               <code id="img-postgres" class="ref__code"><span class="tk-key">FROM</span> ghcr.io/mathiasror/varde-postgres:18</code>
               <button class="btn-copy btn-copy--sm" type="button" data-target="img-postgres" aria-label="Copy varde-postgres reference">

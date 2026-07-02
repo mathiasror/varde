@@ -183,7 +183,11 @@ jobs:
                     printf '#include <stdio.h>\nint main(){puts("varde ok");return 0;}\n' > hello.c
                     musl-gcc -o app hello.c
                     docker run --rm -v "$PWD/app:/app/app:ro" "$ref" | grep -q "varde ok" ;;
-            redis)  docker run --rm -d --name vr "$ref" >/dev/null
+            # Detached services run WITHOUT --rm: a boot crash must leave the
+            # container behind so the failure branch's `docker logs` has
+            # something to show (rabbitmq's first failure self-deleted its
+            # evidence). Both exit paths docker rm -f explicitly.
+            redis)  docker run -d --name vr "$ref" >/dev/null
                     for _ in $(seq 1 20); do docker exec vr /runtime/bin/redis-cli ping 2>/dev/null | grep -q PONG && break; sleep 0.5; done
                     docker exec vr /runtime/bin/redis-cli ping | grep -q PONG || { docker logs vr; docker rm -f vr; exit 1; }
                     echo "varde ok"; docker rm -f vr >/dev/null ;;
@@ -203,13 +207,13 @@ jobs:
                     docker exec vm /runtime/bin/mysql -u root -e 'SELECT 1' >/dev/null || { docker logs vm; docker rm -f vm; exit 1; }
                     echo "varde ok"; docker rm -f vm >/dev/null; docker volume rm vmy >/dev/null ;;
             # CLI escripts are on PATH (kernel shebang -> in-image ELF, no shell).
-            rabbitmq) docker run --rm -d --name vq "$ref" >/dev/null
+            rabbitmq) docker run -d --name vq "$ref" >/dev/null
                     ok=1; for _ in $(seq 1 60); do docker exec vq rabbitmq-diagnostics ping >/dev/null 2>&1 && { ok=0; break; }; sleep 1; done
                     [ "$ok" -eq 0 ] || { docker logs vq; docker rm -f vq; exit 1; }
                     echo "varde ok"; docker rm -f vq >/dev/null ;;
             # No client binary in the image and no shell: probe from the runner
             # over TCP with bash's /dev/tcp.
-            memcached) docker run --rm -d --name vmc -p 127.0.0.1:18211:11211 "$ref" >/dev/null
+            memcached) docker run -d --name vmc -p 127.0.0.1:18211:11211 "$ref" >/dev/null
                     ok=1
                     for _ in $(seq 1 40); do
                       if exec 3<>/dev/tcp/127.0.0.1/18211 2>/dev/null; then
