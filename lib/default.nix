@@ -3,9 +3,14 @@
 # An image module (images/<name>.nix) is a function
 #   { pkgs, vardeLib, lib }: { description; latest?; variants = { "<tag>" = spec; }; }
 # where each `spec` is:
-#   { contents ? [], entrypoint, cmd ? null, env ? [], fhs ? false }
+#   { contents ? [], entrypoint, cmd ? null, env ? [], libc, fhs ? false,
+#     stopSignal ? null }
 # `contents` are language-specific store paths merged at image root (e.g. a
-# runtime relocated under /runtime). Everything else below is added for free.
+# runtime relocated under /runtime). `libc` ("musl" | "glibc" | null) is set by
+# mkVariants or the base specs below — flake.nix reads it for the CI matrix and
+# mkLibcEnv builds the FHS layout from it when `fhs = true`. `stopSignal` maps
+# to the OCI StopSignal for daemons whose clean-shutdown signal isn't SIGTERM
+# (see images/postgres.nix). Everything else below is added for free.
 { nixpkgs }:
 let
   lib = nixpkgs.lib;
@@ -189,7 +194,10 @@ rec {
           "org.opencontainers.image.base.name" = "scratch";
         };
       }
-      // lib.optionalAttrs (spec ? cmd && spec.cmd != null) { Cmd = spec.cmd; };
+      // lib.optionalAttrs (spec ? cmd && spec.cmd != null) { Cmd = spec.cmd; }
+      // lib.optionalAttrs (spec ? stopSignal && spec.stopSignal != null) {
+        StopSignal = spec.stopSignal;
+      };
     };
 
   # CycloneDX SBOM (with CPEs) over the runtime closure of everything in the

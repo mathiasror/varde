@@ -63,7 +63,7 @@
         );
 
       # Which tag each image publishes as :latest (module-declared; falls back to
-      # the sole variant for single-variant images like go/rust). A multi-variant
+      # the sole variant for single-variant images like static/glibc/musl). A multi-variant
       # module MUST declare `latest` — otherwise picking one silently (e.g. the
       # alphabetically-first, oldest tag) would be a footgun, so error instead.
       latestTags = lib.mapAttrs (

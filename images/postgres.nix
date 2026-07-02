@@ -168,6 +168,11 @@ let
         "PGDATA=/app/data"
         "PGHOST=/tmp"
       ];
+      # `docker stop`'s default SIGTERM is postgres "smart" shutdown: wait for
+      # every session to end — in a container that means idling until the stop
+      # timeout SIGKILLs the daemon, and the next boot pays crash recovery.
+      # SIGINT is "fast" shutdown: abort transactions, disconnect, exit clean.
+      stopSignal = "SIGINT";
       # no fhs: the nixpkgs postgres binaries find their libs via RPATH.
     };
 in

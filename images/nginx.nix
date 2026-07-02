@@ -30,12 +30,17 @@ let
         (vardeLib.relocate p "varde-nginx-root-${p.nginx.version}" "runtime" p.nginx)
         conf
       ];
-      # -p sets a writable prefix (/tmp) for any relative default paths; -c points
-      # at our config; daemon off so PID 1 is nginx.
+      # -p sets a writable prefix (/tmp) for any relative default paths; -e
+      # replaces the compile-time default error log (/var/log/nginx/error.log),
+      # which nginx opens BEFORE reading the config and alerts about on every
+      # start (the config itself already logs to /dev/stderr); -c points at our
+      # config; daemon off so PID 1 is nginx.
       entrypoint = [
         "/runtime/bin/nginx"
         "-p"
         "/tmp"
+        "-e"
+        "stderr"
         "-c"
         "/etc/nginx/nginx.conf"
         "-g"

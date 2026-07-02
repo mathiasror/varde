@@ -247,7 +247,9 @@ jobs:
                     [ "$ok" -eq 0 ] || { docker logs vmc; docker rm -f vmc; exit 1; }
                     echo "varde ok"; docker rm -f vmc >/dev/null ;;
             nginx)  echo '<h1>varde ok</h1>' > index.html
-                    docker run --rm -d --name vn -p 18080:8080 -v "$PWD/index.html:/app/index.html:ro" "$ref" >/dev/null
+                    # No --rm: like the other detached services, a boot crash
+                    # must leave the container for the failure branch's logs.
+                    docker run -d --name vn -p 18080:8080 -v "$PWD/index.html:/app/index.html:ro" "$ref" >/dev/null
                     for _ in $(seq 1 20); do curl -fsS localhost:18080 2>/dev/null | grep -q "varde ok" && break; sleep 0.5; done
                     curl -fsS localhost:18080 | grep -q "varde ok" || { docker logs vn; docker rm -f vn; exit 1; }
                     echo "varde ok"; docker rm -f vn >/dev/null ;;
