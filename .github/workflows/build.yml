@@ -121,13 +121,13 @@ jobs:
           # Report-only: a base image should still publish so its SBOM/SARIF stays
           # visible (Security tab) for downstream to act on. Enforce hard gates in
           # the *app* image, not here.
-          nix run nixpkgs#trivy -- sbom --scanners vuln --severity HIGH,CRITICAL sbom.cdx.json
-          nix run nixpkgs#trivy -- sbom --scanners vuln \
+          nix run --inputs-from . nixpkgs#trivy -- sbom --scanners vuln --severity HIGH,CRITICAL sbom.cdx.json
+          nix run --inputs-from . nixpkgs#trivy -- sbom --scanners vuln \
             --format sarif --output trivy-sbom.sarif sbom.cdx.json
 
       - name: "Trivy: image filesystem (app artifacts, secrets, misconfig)"
         run: |
-          nix run nixpkgs#trivy -- image --input result \
+          nix run --inputs-from . nixpkgs#trivy -- image --input result \
             --format sarif --output trivy-image.sarif --severity HIGH,CRITICAL
 
       # SARIF -> Security tab needs code scanning, which private repos only get
@@ -224,7 +224,7 @@ jobs:
           conf="$(mktemp)"; printf 'unqualified-search-registries = []\n' > "$conf"
           export CONTAINERS_REGISTRIES_CONF="$conf"
           dgst="$RUNNER_TEMP/digest.txt"
-          nix run nixpkgs#skopeo -- --insecure-policy copy \
+          nix run --inputs-from . nixpkgs#skopeo -- --insecure-policy copy \
             --digestfile "$dgst" \
             --dest-creds "${ACTOR}:${TOKEN}" \
             docker-archive:result \
@@ -245,8 +245,8 @@ jobs:
       - name: Sign image + attach SBOM attestation (cosign, keyless)
         if: github.event_name != 'pull_request'
         run: |
-          nix run nixpkgs#cosign -- sign --yes "$IMAGE_REF"
-          nix run nixpkgs#cosign -- attest --yes --type cyclonedx --predicate sbom.cdx.json "$IMAGE_REF"
+          nix run --inputs-from . nixpkgs#cosign -- sign --yes "$IMAGE_REF"
+          nix run --inputs-from . nixpkgs#cosign -- attest --yes --type cyclonedx --predicate sbom.cdx.json "$IMAGE_REF"
 
       # SLSA build-provenance attestation (structured: builder, source commit,
       # invocation) on the same per-arch digest, pushed to GHCR as a referrer so
@@ -265,7 +265,9 @@ jobs:
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     steps:
-      - uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22 (for `nix run nixpkgs#cosign`)
+      # Checkout gives `--inputs-from .` the repo's flake.lock to resolve nixpkgs from.
+      - uses: actions/checkout@v5
+      - uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22 (for `nix run --inputs-from . nixpkgs#cosign`)
       - name: Log in to GHCR
         uses: docker/login-action@v4
         with:
@@ -288,7 +290,7 @@ jobs:
           create(){
             docker buildx imagetools create -t "$1" "$2" "$3"
             d=$(docker buildx imagetools inspect "$1" --format '{{.Manifest.Digest}}')
-            nix run nixpkgs#cosign -- sign --yes "${1%:*}@${d}"
+            nix run --inputs-from . nixpkgs#cosign -- sign --yes "${1%:*}@${d}"
           }
           hastag(){ printf '%s' "$MATRIX" | jq -e --arg im "$1" --arg t "$2" \
             '.include[]|select(.image==$im and .tag==$t)' >/dev/null; }
