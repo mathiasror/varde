@@ -21,10 +21,10 @@ ONLY=("$@")
 read -r -d '' TABLE <<'EOF' || true
 go-simple|examples/go/simple|image-static-latest|static|stdout:varde ok|30
 rust-simple|examples/rust/simple|image-glibc-latest|glibc|stdout:varde ok|55
-python-simple|examples/python/simple|image-python-3_13-musl|python|stdout:varde ok|200
-python-requirements-venv|examples/python/requirements-venv|image-python-3_13-musl|python|stdout:varde ok|210
-python-uv|examples/python/uv|image-python-3_13-musl|python|stdout:varde ok|210
-node-simple|examples/node/simple|image-node-24-musl|node|stdout:varde ok|190
+python-simple|examples/python/simple|image-python-3_13-musl|python|stdout:varde ok|185
+python-requirements-venv|examples/python/requirements-venv|image-python-3_13-musl|python|stdout:varde ok|190
+python-uv|examples/python/uv|image-python-3_13-musl|python|stdout:varde ok|190
+node-simple|examples/node/simple|image-node-24-musl|node|stdout:varde ok|215
 node-express|examples/node/express|image-node-24-musl|node|http:8080:/:varde ok|230
 jre-spring-boot|examples/jre/spring-boot-gradle|image-jre-21-musl|jre|http:8080:/:varde ok|360
 nginx-static-site|examples/nginx/static-site|image-nginx-latest-musl|nginx|http:8080:/:varde ok|90
