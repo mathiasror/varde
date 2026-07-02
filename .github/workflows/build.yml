@@ -8,6 +8,9 @@ name: build-image
 # lists (signing each index).
 # The build matrix and the :latest mapping come straight from the flake
 # (.#ciMatrix / .#latestTags), so adding an image module needs no workflow changes.
+# Pull requests build only the images their diff touches (fail-open — any shared
+# or unrecognized input means the full matrix); push/schedule/dispatch always
+# build everything, so publishes are never scoped.
 # A shared Cachix cache holds the from-source musl builds so later runs (and the
 # e2e workflow) pull them instead of recompiling.
 
@@ -86,8 +89,65 @@ jobs:
         with:
           name: flake-lock
           path: flake.lock
+      # On PRs, work out which images the diff actually touches so `gen` below
+      # can shrink the matrix (one image module -> ~12 jobs instead of ~78).
+      # Publishes are never scoped: push/schedule/dispatch skip this step
+      # (empty `images` output -> full matrix), so GHCR always receives every
+      # tag a publish run refreshes. Every uncertain path fails OPEN to the
+      # full matrix — an oversized PR build wastes minutes, an undersized one
+      # hides breakage until after merge. Changed files come from the GitHub
+      # API via gh (preinstalled on runners) rather than a third-party diff
+      # action, keeping the supply-chain surface at zero.
+      - id: scope
+        name: Scope PR builds to changed images
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          full() { # any doubt -> no scope output -> gen builds the full matrix
+            echo "full matrix: $1"
+            echo "PR scope: full matrix — $1" >> "$GITHUB_STEP_SUMMARY"
+            echo "images=" >> "$GITHUB_OUTPUT"
+            exit 0
+          }
+          files=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}/files" \
+            --paginate --jq '.[].filename') \
+            || full "changed-files fetch failed"
+          images=""
+          while IFS= read -r f; do
+            case "$f" in
+              # nginx.nix embeds this file (via Nix path interpolation), so a
+              # config-only change still rebuilds the nginx image.
+              images/nginx.conf) images="${images}nginx"$'\n' ;;
+              images/*/*)   full "unrecognized file under images/: $f" ;;
+              images/*.nix) images="${images}$(basename "$f" .nix)"$'\n' ;;
+              images/*)     full "unrecognized file under images/: $f" ;;
+              lib/*|flake.nix|flake.lock|.github/workflows/build.yml)
+                            full "shared build input changed: $f" ;;
+              # Anything else (docs, examples, site — mixed PRs) doesn't feed
+              # the image builds; the path filter alone can't tell us this
+              # because it only says *some* listed path changed.
+              *) ;;
+            esac
+          done <<< "$files"
+          images=$(printf '%s' "$images" | sort -u)
+          # Empty set shouldn't happen (the pull_request path filter means at
+          # least one build input changed), but never emit an empty matrix.
+          [ -n "$images" ] || full "no image modules in the diff"
+          list=$(printf '%s' "$images" | tr '\n' ' ')
+          echo "scoped to images: $list"
+          echo "PR scope: building only: $list" >> "$GITHUB_STEP_SUMMARY"
+          echo "images=$(printf '%s\n' "$images" | jq -Rcn '[inputs]')" >> "$GITHUB_OUTPUT"
+
       - id: gen
         name: Derive build matrix from the flake
+        env:
+          # JSON array of image names from the scoping step above; empty on
+          # push/schedule/dispatch (step skipped) and whenever scoping chose
+          # the full matrix.
+          SCOPED: ${{ steps.scope.outputs.images }}
         run: |
           # Cross each {image,tag,attr,sbomName} with the two native arches.
           matrix=$(nix eval --json .#ciMatrix | jq -c '{include: [
@@ -95,6 +155,23 @@ jobs:
             | ({name:"amd64",runner:"ubuntu-latest"}, {name:"arm64",runner:"ubuntu-24.04-arm"}) as $a
             | $i + {arch:$a.name, runner:$a.runner}
           ]}')
+          # Apply the PR scope, if any. Guard against the filter matching
+          # nothing (e.g. a PR that only *deletes* an image module scopes to a
+          # name the flake no longer knows): GitHub errors on an empty matrix,
+          # so fall back to full rather than build nothing.
+          if [ -n "${SCOPED:-}" ]; then
+            scoped=$(printf '%s' "$matrix" | jq -c --argjson keep "$SCOPED" \
+              '{include: [.include[] | select(.image | IN($keep[]))]}')
+            if [ "$(printf '%s' "$scoped" | jq '.include | length')" -gt 0 ]; then
+              matrix="$scoped"
+            else
+              echo "scoped matrix is empty; falling back to the full matrix"
+              echo "PR scope: scoped matrix was empty — built the full matrix instead" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          fi
+          echo "matrix jobs: $(printf '%s' "$matrix" | jq '.include | length')"
+          # latest/aliases stay unscoped on purpose: only the manifest job
+          # consumes them, and it never runs on pull_request.
           latest=$(nix eval --json .#latestTags)
           aliases=$(nix eval --json .#imageAliases)
           {
