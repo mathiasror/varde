@@ -82,6 +82,10 @@ jobs:
     name: ${{ matrix.image }}:${{ matrix.tag }} (${{ matrix.arch }})
     needs: setup
     runs-on: ${{ matrix.runner }}
+    # Cached builds finish in minutes; the ceiling exists for cache-cold musl
+    # compiles (icu, erlang, postgres) while still cutting off wedged runners
+    # well before the 6h default.
+    timeout-minutes: 240
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.setup.outputs.matrix) }}
