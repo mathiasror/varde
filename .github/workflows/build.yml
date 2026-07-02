@@ -28,7 +28,10 @@ permissions:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Cancel superseded PR runs, but never a half-done main publish: cancelling
+  # mid-run skips the manifest job and leaves GHCR with per-arch tags but no
+  # multi-arch/latest/alias manifest lists.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   REGISTRY: ghcr.io
