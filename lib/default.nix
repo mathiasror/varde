@@ -183,6 +183,9 @@ rec {
         Labels = {
           "org.opencontainers.image.title" = name;
           "org.opencontainers.image.description" = description;
+          "org.opencontainers.image.source" = "https://github.com/mathiasror/varde";
+          "org.opencontainers.image.url" = "https://rorvik.xyz";
+          "org.opencontainers.image.licenses" = "Apache-2.0";
           "org.opencontainers.image.base.name" = "scratch";
         };
       }
