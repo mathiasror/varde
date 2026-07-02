@@ -20,11 +20,13 @@ let
   jreSpec = p: jre: {
     contents = [
       (p.runCommand "varde-jre-root-${jre.version}" { } ''
-        mkdir -p "$out/runtime"
+        mkdir -p "$out"
         # Resolve the real JRE home (handles flat or nested nixpkgs layouts) so
         # /runtime is a self-contained Java home with java at /runtime/bin/java.
+        # Symlink, don't copy: the closure ships the store path either way, and
+        # a copy would double the JRE payload in the image (see lib relocate).
         home="$(dirname "$(dirname "$(readlink -f ${jre}/bin/java)")")"
-        cp -a "$home"/. "$out/runtime/"
+        ln -s "$home" "$out/runtime"
       '')
     ];
     entrypoint = [ "/runtime/bin/java" ];
