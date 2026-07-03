@@ -523,4 +523,25 @@ jobs:
 
           sort -u "$SIGNLIST" -o "$SIGNLIST"
           echo "created $(wc -l < "$planfile") manifest lists; signing $(wc -l < "$SIGNLIST") unique digests"
-          xargs -P 4 -n 1 cosign sign --yes < "$SIGNLIST"
+
+          # cosign 3.x signs OCI indexes via the OCI-1.1 referrers flow, and as
+          # of 2026-07-02 GHCR answers the referrers-API housekeeping GET with a
+          # redirect to a github.com page that 403s for the CI token — AFTER the
+          # signature bundle and Rekor entry have already landed (verified with
+          # `cosign verify` against each "failed" run). The per-arch signs in
+          # the build job are unaffected (skopeo pushes Docker-type manifests,
+          # which take cosign's legacy tag path). Gate on what consumers
+          # actually run — `cosign verify` — instead of cosign's exit code:
+          # a spurious housekeeping error passes, a missing signature fails.
+          sign_one(){
+            cosign sign --yes "$1" && return 0
+            echo "cosign sign exited nonzero for $1 — checking whether the signature actually landed"
+            cosign verify \
+              --certificate-identity-regexp "^https://github.com/${GITHUB_REPOSITORY}/" \
+              --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+              "$1" >/dev/null 2>&1 && { echo "verified: $1 is signed despite the sign error"; return 0; }
+            echo "signature for $1 is genuinely missing" >&2
+            return 1
+          }
+          export -f sign_one
+          xargs -P 4 -n 1 bash -c 'set -euo pipefail; sign_one "$@"' _ < "$SIGNLIST"
