@@ -89,7 +89,23 @@ let
               rm -rf "$out/bin" "$out/libexec" "$out/share/thumbnailers" "$out/lib/gdk-pixbuf-2.0"
             '';
           });
-          gd = p.gd.override { inherit libavif; };
+          # libXpm compiles in absolute paths to gzip and uncompress and execs
+          # them to read compressed .xpm files — the final shell route (gzip
+          # ships bash scripts: zgrep, zcat & co): php-gd -> gd -> libXpm ->
+          # gzip -> bash, identically on both libcs. Sever the compressed-XPM
+          # exec paths: plain .xpm keeps working; opening a .xpm.gz/.xpm.Z now
+          # fails cleanly instead of exec'ing a compressor the image doesn't
+          # ship anyway.
+          libxpm = p.libxpm.overrideAttrs (prev: {
+            nativeBuildInputs = (prev.nativeBuildInputs or [ ]) ++ [
+              p.buildPackages.removeReferencesTo
+            ];
+            postFixup = (prev.postFixup or "") + ''
+              find "$out" -type f -exec remove-references-to \
+                -t ${p.gzip} -t ${p.ncompress} {} +
+            '';
+          });
+          gd = p.gd.override { inherit libavif libxpm; };
 
           # gettext (linked by ext-gettext for libintl — a real runtime dep on
           # musl, where libintl doesn't live in the libc) ships bash scripts
