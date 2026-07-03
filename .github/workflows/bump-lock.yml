@@ -59,7 +59,12 @@ jobs:
         run: |
           set -euo pipefail
           if git diff --quiet -- flake.lock; then
-            echo "flake.lock unchanged — nothing to bump, not dispatching a build"
+            # Still dispatch below: the weekly rebuild also re-scans with a
+            # fresh grype DB and refreshes the Security-tab SARIF, and
+            # republishing identical digests is idempotent — an unchanged
+            # lock must not silently skip the week.
+            echo "flake.lock unchanged — nothing to commit; dispatching the weekly rebuild anyway"
+            gh workflow run build.yml --ref main
             exit 0
           fi
           new_rev=$(jq -r '.nodes.nixpkgs.locked.rev[0:12]' flake.lock)

@@ -168,7 +168,10 @@ rec {
 
   # Store-path NAMES no varde image may ship: shells (the distroless promise)
   # and -dev outputs (build-material leakage). POSIX EREs matched against the
-  # <name> part of /nix/store/<hash>-<name>.
+  # <name> part of /nix/store/<hash>-<name>. -bin outputs are deliberately not
+  # banned: utility CLIs (sqlite-bin, zstd-bin) only ever entered a closure
+  # via a propagating -dev referrer, which the -dev ban already severs — and
+  # legitimate contents could plausibly carry a -bin name.
   closureDenyPatterns = [
     "^(bash|dash|busybox|mksh|zsh|toybox)-"
     "-dev$"
@@ -184,14 +187,18 @@ rec {
   # image's closure turns the build red instead of publishing it.
   closureGuard =
     pkgs:
-    { name, spec }:
+    {
+      name,
+      contents,
+      allow ? [ ],
+    }:
     pkgs.runCommand "${name}-closure-guard"
       {
-        closure = pkgs.closureInfo { rootPaths = imageContents pkgs spec; };
+        closure = pkgs.closureInfo { rootPaths = contents; };
         denyRegex = lib.concatStringsSep "|" closureDenyPatterns;
         # "^$" never matches a store-path name; it keeps an empty allow list a
         # valid ERE.
-        allowRegex = lib.concatStringsSep "|" ((spec.closureAllow or [ ]) ++ [ "^$" ]);
+        allowRegex = lib.concatStringsSep "|" (allow ++ [ "^$" ]);
       }
       ''
         bad=0
@@ -219,14 +226,15 @@ rec {
       spec,
     }:
     let
+      contents = imageContents pkgs spec;
       guard = closureGuard pkgs {
         name = "${name}-${tag}";
-        inherit spec;
+        inherit contents;
+        allow = spec.closureAllow or [ ];
       };
     in
     pkgs.dockerTools.buildLayeredImage {
-      inherit name tag;
-      contents = imageContents pkgs spec;
+      inherit name tag contents;
       extraCommands = ''
         # Interpolating the closure guard (${guard}) makes it an input of this
         # layer derivation: the image cannot build unless the guard passed.
@@ -309,25 +317,21 @@ rec {
         mkdir -p "$out"
         for p in $contents; do ln -s "$p" "$out/$(basename "$p")"; done
       '';
-      libcComponents =
-        if (spec.libc or null) == "musl" then
-          [
-            (sbomComponent {
-              vendor = "musl-libc";
-              product = "musl";
-              version = pkgs.musl.version;
-            })
-          ]
-        else if (spec.libc or null) == "glibc" then
-          [
-            (sbomComponent {
-              vendor = "gnu";
-              product = "glibc";
-              version = pkgs.glibc.version;
-            })
-          ]
-        else
-          [ ]; # varde-static ships no libc
+      # NVD identities per libc; a null libc (varde-static) contributes none.
+      libcIds = {
+        musl = {
+          vendor = "musl-libc";
+          product = "musl";
+          version = pkgs.musl.version;
+        };
+        glibc = {
+          vendor = "gnu";
+          product = "glibc";
+          version = pkgs.glibc.version;
+        };
+      };
+      libc = spec.libc or null;
+      libcComponents = lib.optionals (libc != null) [ (sbomComponent libcIds.${libc}) ];
       extraComponents = libcComponents ++ (spec.sbomExtraComponents or [ ]);
       app = pkgs.writeShellApplication {
         name = "${name}-sbom";

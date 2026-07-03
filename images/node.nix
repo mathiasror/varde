@@ -30,7 +30,9 @@ let
       # The dev (and sqlite's bin) outputs of node's own buildInputs — the
       # exact set the binary can reference, resolved from the package itself
       # so a nixpkgs bump cannot silently add one this misses. The closure
-      # guard in lib/default.nix backstops that claim.
+      # guard in lib/default.nix backstops the -dev half of that claim; -bin
+      # outputs (the sqlite3 CLI) only ever arrive via their -dev referrer,
+      # which severing -dev cuts off.
       inertRefs = lib.unique (
         lib.concatMap (
           d: lib.optional (d ? dev) d.dev ++ lib.optional (lib.getName d == "sqlite" && d ? bin) d.bin
@@ -46,7 +48,12 @@ let
             mkdir -p "$out/runtime/bin"
             cp ${node}/bin/node "$out/runtime/bin/node"
             chmod u+w "$out/runtime/bin/node"
+            # -t ''${node}: the binary also embeds its own store path
+            # (process.config's "node_prefix") — inert config metadata of the
+            # same class as the dev echoes, and it must go or this copy's own
+            # disallowedRequisites rejects the build.
             remove-references-to \
+              -t ${node} \
               ${lib.concatMapStringsSep " " (t: "-t ${t}") inertRefs} \
               "$out/runtime/bin/node"
           '';

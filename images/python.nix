@@ -32,7 +32,10 @@ let
     let
       stripped =
         (p.runCommand "varde-python-root-${py.version}" {
-          nativeBuildInputs = [ p.buildPackages.removeReferencesTo ];
+          nativeBuildInputs = [
+            p.buildPackages.removeReferencesTo
+            p.buildPackages.patchelf
+          ];
           # Build-time proof (house style, images/rabbitmq.nix): the copy may
           # reference neither the stdenv bash nor the stock interpreter.
           disallowedRequisites = [
@@ -53,6 +56,21 @@ let
             rm -f bin/*-config bin/idle*
             rm -rf lib/python*/config-* lib/pkgconfig nix-support
             rm -f lib/python*/ctypes/macholib/fetch_macholib
+
+            # bin/python3.x is a small launcher that links libpython3.x.so
+            # through a RUNPATH pointing at the STOCK store path (CPython is
+            # built --enable-shared); retarget every ELF's RUNPATH at this
+            # copy BEFORE the reference strip below dummies the old hash out,
+            # or the interpreter cannot resolve libpython at container start.
+            find "$out/runtime" -type f | while IFS= read -r f; do
+              isELF "$f" || continue
+              old=$(patchelf --print-rpath "$f" 2>/dev/null) || continue
+              case "$old" in
+                *${py}*)
+                  patchelf --set-rpath "$(printf '%s' "$old" | sed "s|${py}|$out/runtime|g")" "$f"
+                  ;;
+              esac
+            done
 
             # Remaining bin/ scripts (pydoc3.x) carry shebangs pointing at the
             # stock store path; /runtime is this same tree's in-image path

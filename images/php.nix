@@ -102,11 +102,7 @@ let
                 # stock gd (and its libavif/gdk-pixbuf tail) would linger as a
                 # build input of the extension.
                 configureFlags = map (
-                  f:
-                  if lib.hasPrefix "--with-external-gd=" (toString f) then
-                    "--with-external-gd=${gd.dev}"
-                  else
-                    f
+                  f: if lib.hasPrefix "--with-external-gd=" (toString f) then "--with-external-gd=${gd.dev}" else f
                 ) prev.configureFlags;
               });
           keptFixed = map swapGd kept;
