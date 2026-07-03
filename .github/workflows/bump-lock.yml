@@ -1,0 +1,100 @@
+name: bump-flake-lock
+
+# Weekly nixpkgs bump, split out of build.yml. Previously the scheduled build
+# ran `nix flake update` in its setup job and never committed the result, so
+# published images were built from a lock that existed in no commit: the SLSA
+# provenance pointed at a source revision that could not reproduce the
+# artifacts, and the resolved inputs lived only in a 90-day CI artifact. Here
+# the refreshed lock is committed to main FIRST — via the GraphQL
+# createCommitOnBranch mutation, so the GITHUB_TOKEN commit is GitHub-signed
+# and shows the "Verified" badge — and build.yml is then dispatched on the new
+# head, so the attested source sha contains the exact lock the images are
+# built from.
+#
+# The lock commit itself does NOT recursively trigger build.yml's push trigger
+# (whose path filter does match flake.lock): pushes made with the repository
+# GITHUB_TOKEN never create workflow runs. workflow_dispatch is the documented
+# exception ("workflow_dispatch and repository_dispatch events always create
+# workflow runs"), hence the explicit `gh workflow run` — exactly one build.
+# https://docs.github.com/en/actions/using-workflows/triggering-a-workflow#triggering-a-workflow-from-a-workflow
+
+on:
+  schedule:
+    - cron: "0 6 * * 1" # weekly bump + rebuild for fresh CVE fixes (was build.yml's cron)
+  workflow_dispatch:
+
+permissions:
+  contents: write # createCommitOnBranch on main
+  actions: write # gh workflow run build.yml
+
+# Never let a manual dispatch race the cron: one bump at a time, never
+# cancelled mid-commit.
+concurrency:
+  group: bump-flake-lock
+  cancel-in-progress: false
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+        with:
+          determinate: false # plain upstream Nix; no FlakeHub login attempt (see build.yml)
+
+      - name: Update flake.lock
+        run: nix flake update
+
+      - name: Sanity-check the new lock evaluates
+        # Don't commit a lock that breaks flake evaluation — catch it here
+        # instead of as a red dispatched build on main. (Eval only touches the
+        # matrix fields, so this stays cheap; build failures are the
+        # dispatched run's job to find.)
+        run: nix eval --json .#ciMatrix >/dev/null
+
+      - name: Commit lock to main (GitHub-signed) and dispatch build
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- flake.lock; then
+            echo "flake.lock unchanged — nothing to bump, not dispatching a build"
+            exit 0
+          fi
+          new_rev=$(jq -r '.nodes.nixpkgs.locked.rev[0:12]' flake.lock)
+          # expectedHeadOid = the sha this job checked out and resolved the
+          # lock against. If main moved meanwhile, the mutation is rejected
+          # instead of committing a stale lock; the next cron (or a manual
+          # dispatch) retries against the new head.
+          head=$(git rev-parse HEAD)
+          # createCommitOnBranch with GITHUB_TOKEN: GitHub authors AND signs
+          # the commit ("Commits made using this mutation are automatically
+          # signed by GitHub … marked as verified in the user interface");
+          # file contents must be base64 (FileAddition.contents).
+          #
+          # Ruleset note: "protect main" currently enforces only deletion +
+          # non_fast_forward, so this direct bot commit is allowed. If main
+          # ever gains required status checks or a required-PR rule, this
+          # mutation will start failing and the bump must move to a PR flow.
+          # shellcheck disable=SC2016 # $repo/$head/… are GraphQL variables, not shell
+          gh api graphql \
+            -f query='
+              mutation ($repo: String!, $head: GitObjectID!, $message: String!, $contents: Base64String!) {
+                createCommitOnBranch(input: {
+                  branch: { repositoryNameWithOwner: $repo, branchName: "main" },
+                  expectedHeadOid: $head,
+                  message: { headline: $message },
+                  fileChanges: { additions: [{ path: "flake.lock", contents: $contents }] }
+                }) { commit { oid url } }
+              }' \
+            -f repo="$GITHUB_REPOSITORY" \
+            -f head="$head" \
+            -f message="chore: bump flake.lock (nixpkgs ${new_rev})" \
+            -f contents="$(base64 -w0 flake.lock)"
+          # workflow_dispatch fired with GITHUB_TOKEN DOES create a run (the
+          # documented exception to the no-recursive-triggers rule). The run
+          # resolves refs/heads/main when it starts — the lock commit just
+          # made, or a fast-forward descendant of it (the ruleset forbids
+          # non-fast-forward pushes, so the lock is always in its history).
+          gh workflow run build.yml --ref main

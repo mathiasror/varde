@@ -249,8 +249,12 @@ Both `build` and `e2e` push/pull a shared **Cachix** cache so the from-source
 musl variants are compiled once and reused across jobs, later runs, and the e2e
 workflow (the first run is slow; subsequent ones are downloads).
 
-Auth uses the built-in `GITHUB_TOKEN`. A weekly cron rebuilds against the latest
-nixpkgs so published images pick up CVE fixes even when this repo is unchanged.
+Auth uses the built-in `GITHUB_TOKEN`. A weekly job
+([`bump-lock.yml`](.github/workflows/bump-lock.yml)) bumps `flake.lock` to the
+latest nixpkgs, commits the bump to `main` (a GitHub-signed bot commit), and
+dispatches the build from that commit — so published images pick up CVE fixes
+*and* every published image corresponds to a commit of this repo whose lock
+reproduces it.
 
 > **Cache setup, one-time:** create a free open-source cache named `varde` at
 > [cachix.org](https://cachix.org) (keep it **public** so fork PRs and end users

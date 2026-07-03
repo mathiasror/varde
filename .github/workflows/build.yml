@@ -10,8 +10,11 @@ name: build-image
 # The build matrix and the :latest mapping come straight from the flake
 # (.#ciMatrix / .#latestTags), so adding an image module needs no workflow changes.
 # Pull requests build only the images their diff touches (fail-open — any shared
-# or unrecognized input means the full matrix); push/schedule/dispatch always
-# build everything, so publishes are never scoped.
+# or unrecognized input means the full matrix); push/dispatch always build
+# everything, so publishes are never scoped. The weekly CVE-refresh rebuild
+# lives in bump-lock.yml, which commits a flake.lock bump to main and then
+# dispatches this workflow — so every published image is built from a lock
+# that exists in a commit, and the SLSA provenance sha reproduces the build.
 # A shared Cachix cache holds the from-source musl builds so later runs (and the
 # e2e workflow) pull them instead of recompiling.
 
@@ -19,9 +22,9 @@ on:
   push:
     branches: [main]
     # Build only when image inputs change: doc/site-only pushes skip the whole
-    # matrix (pages.yml covers site/). The weekly cron below is unaffected —
-    # schedule events ignore path filters — and workflow_dispatch remains for a
-    # manual full run. Keep both lists in sync (Actions YAML has no anchors).
+    # matrix (pages.yml covers site/). workflow_dispatch remains for a manual
+    # full run (and is how bump-lock.yml triggers the weekly rebuild). Keep
+    # both lists in sync (Actions YAML has no anchors).
     paths:
       - "images/**"
       - "lib/**"
@@ -41,8 +44,6 @@ on:
       - ".github/workflows/build.yml"
       - ".github/canary/**"
   workflow_dispatch:
-  schedule:
-    - cron: "0 6 * * 1" # weekly rebuild for fresh CVE fixes
 
 permissions:
   contents: read
@@ -78,21 +79,9 @@ jobs:
       - uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
         with:
           determinate: false
-      # On the weekly cron, bump nixpkgs ONCE here and share the resolved lock with
-      # every build job, so all images in a run — and both arches of each tag —
-      # build against a single nixpkgs revision (otherwise each job's own
-      # `nix flake update` could pull a different nixos-unstable tip).
-      - name: Refresh nixpkgs (scheduled only)
-        if: github.event_name == 'schedule'
-        run: nix flake update
-      - name: Upload resolved flake.lock
-        uses: actions/upload-artifact@v7
-        with:
-          name: flake-lock
-          path: flake.lock
       # On PRs, work out which images the diff actually touches so `gen` below
       # can shrink the matrix (one image module -> ~12 jobs instead of ~78).
-      # Publishes are never scoped: push/schedule/dispatch skip this step
+      # Publishes are never scoped: push/dispatch skip this step
       # (empty `images` output -> full matrix), so GHCR always receives every
       # tag a publish run refreshes. Every uncertain path fails OPEN to the
       # full matrix — an oversized PR build wastes minutes, an undersized one
@@ -146,8 +135,8 @@ jobs:
         name: Derive build matrix from the flake
         env:
           # JSON array of image names from the scoping step above; empty on
-          # push/schedule/dispatch (step skipped) and whenever scoping chose
-          # the full matrix.
+          # push/dispatch (step skipped) and whenever scoping chose the full
+          # matrix.
           SCOPED: ${{ steps.scope.outputs.images }}
         run: |
           # Cross each {image,tag,attr,sbomName} with the two native arches.
@@ -205,13 +194,6 @@ jobs:
         with:
           name: varde
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
-
-      # Build against the exact flake.lock the setup job resolved (see there), so
-      # this run is internally consistent across images and arches.
-      - name: Fetch shared flake.lock
-        uses: actions/download-artifact@v8
-        with:
-          name: flake-lock
 
       - name: Build image
         env:

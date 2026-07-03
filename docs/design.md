@@ -133,7 +133,9 @@ Registry tags: `:<tag>-<libc>` (a multi-arch manifest list) and
 `:<tag>-<libc>-<arch>` per-arch; a bare `:<tag>` and `:latest` aliasing the
 default libc (musl if built, else glibc); `:latest-glibc`; and the `varde-go` /
 `varde-rust` alias images mirroring `varde-static` / `varde-glibc`. A weekly
-rebuild against the latest nixpkgs picks up CVE fixes.
+job commits a `flake.lock` bump to `main` and builds from that commit, so CVE
+fixes flow through and every published image corresponds to a commit whose
+lock reproduces it.
 
 A separate `e2e.yml` workflow builds every example in `examples/<image>/<variant>/`
 on top of a locally-built base, smoke-tests that the app runs, and asserts a
