@@ -52,8 +52,10 @@ Every runtime/service image is built for both C libraries. **The bare tag is
 musl** (the default); append **`-glibc`** to opt in to glibc:
 
 ```dockerfile
-FROM ghcr.io/mathiasror/varde-python:3.13          # musl (default)
-FROM ghcr.io/mathiasror/varde-python:3.13-glibc    # glibc (opt-in)
+# musl (default)
+FROM ghcr.io/mathiasror/varde-python:3.13
+# glibc (opt-in)
+FROM ghcr.io/mathiasror/varde-python:3.13-glibc
 ```
 
 musl is the default because a smaller libc means less to patch and a smaller
@@ -121,7 +123,8 @@ under [`examples/`](examples/) — each takes an `ARG BASE_IMAGE`, so you can
 The shortest possible case (a static binary):
 
 ```dockerfile
-FROM ghcr.io/mathiasror/varde-static:latest   # a.k.a. varde-go
+# a.k.a. varde-go
+FROM ghcr.io/mathiasror/varde-static:latest
 COPY app /app/app
 # Inherits USER 1000:1000, WORKDIR /app, ENTRYPOINT ["/app/app"]
 ```
@@ -142,7 +145,7 @@ nix build .#image-jre-21-musl       # -> ./result  (a Docker-format image tarbal
 nix build .#image-python-3_12-glibc # note: dots -> underscores, libc is part of the attr
 docker load < result
 # or push to your own namespace without a daemon:
-skopeo copy docker-archive:result docker://ghcr.io/<your-user>/varde-jre:21-musl-amd64
+skopeo copy docker-archive:result docker://ghcr.io/YOUR_USER/varde-jre:21-musl-amd64
 ```
 
 List everything that exists: `nix eval --json .#ciMatrix` (each entry carries its
