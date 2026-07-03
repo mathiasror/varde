@@ -87,7 +87,11 @@
 #
 # Built for both libcs: the bare tag (e.g. :18) is musl; opt into glibc with
 # :18-glibc. :latest is the newest stable major.
-{ pkgs, vardeLib, lib }:
+{
+  pkgs,
+  vardeLib,
+  lib,
+}:
 let
   # `p` is the libc's package set (pkgs for glibc, pkgs.pkgsMusl for musl).
   pgSpec =
@@ -174,6 +178,11 @@ let
       # SIGINT is "fast" shutdown: abort transactions, disconnect, exit clean.
       stopSignal = "SIGINT";
       # no fhs: the nixpkgs postgres binaries find their libs via RPATH.
+
+      # The deliberate /bin/sh (busybox-sandbox-shell; its store name is plain
+      # busybox-<version>) — the sole shell any varde image ships, exempted
+      # from the lib/default.nix closure guard that bans shells everywhere.
+      closureAllow = [ "^busybox-" ];
     };
 in
 {
@@ -181,9 +190,15 @@ in
   latest = "18"; # newest stable major in the pinned nixpkgs (19 is still beta)
   variants = vardeLib.mkVariants pkgs {
     versions = {
-      "16" = { spec = p: pgSpec p p.postgresql_16; };
-      "17" = { spec = p: pgSpec p p.postgresql_17; };
-      "18" = { spec = p: pgSpec p p.postgresql_18; };
+      "16" = {
+        spec = p: pgSpec p p.postgresql_16;
+      };
+      "17" = {
+        spec = p: pgSpec p p.postgresql_17;
+      };
+      "18" = {
+        spec = p: pgSpec p p.postgresql_18;
+      };
     };
   };
 }

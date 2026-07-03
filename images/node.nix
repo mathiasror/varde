@@ -8,30 +8,70 @@
 # Built for both libcs: the bare tag (e.g. :24) is musl; opt into glibc with the
 # :24-glibc tag. `fhs = true` gives the image the matching libc + libstdc++/libgcc_s
 # layout so native node addons (.node compiled against system libs) load correctly.
-{ pkgs, vardeLib, lib }:
+{
+  pkgs,
+  vardeLib,
+  lib,
+}:
 let
   # `p` is the libc's package set (pkgs for glibc, pkgs.pkgsMusl for musl).
-  nodeSpec = p: node: {
-    contents = [ (vardeLib.relocate p "varde-node-root-${node.version}" "runtime" node) ];
-    entrypoint = [ "/runtime/bin/node" ];
-    cmd = [ "/app/main.js" ];
-    env = [
-      "PATH=/runtime/bin"
-      "NODE_ENV=production"
-    ];
-    fhs = true;
+  #
+  # nodejs-slim's usable payload is the single bin/node ELF — but that binary
+  # embeds its configure echoes (process.config): inert references to the dev
+  # output of every library it was built against, through which bash
+  # (icu4c-dev's icu-config, zstd-dev -> zstd-bin) and the sqlite3 CLI
+  # (sqlite-dev -> sqlite-bin) rode into the closure. Ship a copy of just the
+  # ELF with those strings dummied out; the genuine RPATH entries point at lib
+  # outputs and are untouched. The stock `node` stays the metadata source;
+  # only node.version is dereferenced.
+  nodeSpec =
+    p: node:
+    let
+      # The dev (and sqlite's bin) outputs of node's own buildInputs — the
+      # exact set the binary can reference, resolved from the package itself
+      # so a nixpkgs bump cannot silently add one this misses. The closure
+      # guard in lib/default.nix backstops that claim.
+      inertRefs = lib.unique (
+        lib.concatMap (
+          d: lib.optional (d ? dev) d.dev ++ lib.optional (lib.getName d == "sqlite" && d ? bin) d.bin
+        ) (node.buildInputs or [ ])
+        ++ [ p.bashNonInteractive ]
+      );
+      stripped =
+        (p.runCommand "varde-node-root-${node.version}" {
+          nativeBuildInputs = [ p.buildPackages.removeReferencesTo ];
+          disallowedRequisites = inertRefs ++ [ node ];
+        })
+          ''
+            mkdir -p "$out/runtime/bin"
+            cp ${node}/bin/node "$out/runtime/bin/node"
+            chmod u+w "$out/runtime/bin/node"
+            remove-references-to \
+              ${lib.concatMapStringsSep " " (t: "-t ${t}") inertRefs} \
+              "$out/runtime/bin/node"
+          '';
+    in
+    {
+      contents = [ stripped ];
+      entrypoint = [ "/runtime/bin/node" ];
+      cmd = [ "/app/main.js" ];
+      env = [
+        "PATH=/runtime/bin"
+        "NODE_ENV=production"
+      ];
+      fhs = true;
 
-    # SBOM: NVD files Node.js CVEs under `nodejs:node.js`, so the vendor=name
-    # CPE sbomnix derives (nodejs-slim:nodejs-slim) matches nothing. Scan
-    # metadata only.
-    sbomExtraComponents = [
-      (vardeLib.sbomComponent {
-        vendor = "nodejs";
-        product = "node.js";
-        version = node.version;
-      })
-    ];
-  };
+      # SBOM: NVD files Node.js CVEs under `nodejs:node.js`, so the vendor=name
+      # CPE sbomnix derives (nodejs-slim:nodejs-slim) matches nothing. Scan
+      # metadata only.
+      sbomExtraComponents = [
+        (vardeLib.sbomComponent {
+          vendor = "nodejs";
+          product = "node.js";
+          version = node.version;
+        })
+      ];
+    };
 in
 {
   description = "Minimal distroless Node.js runtime for JavaScript/TypeScript apps";
@@ -41,8 +81,12 @@ in
   # maintained LTS lines are published.
   variants = vardeLib.mkVariants pkgs {
     versions = {
-      "22" = { spec = p: nodeSpec p p."nodejs-slim_22"; };
-      "24" = { spec = p: nodeSpec p p."nodejs-slim_24"; };
+      "22" = {
+        spec = p: nodeSpec p p."nodejs-slim_22";
+      };
+      "24" = {
+        spec = p: nodeSpec p p."nodejs-slim_24";
+      };
     };
   };
 }

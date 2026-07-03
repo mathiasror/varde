@@ -4,7 +4,7 @@
 #   { pkgs, vardeLib, lib }: { description; latest?; variants = { "<tag>" = spec; }; }
 # where each `spec` is:
 #   { contents ? [], entrypoint, cmd ? null, env ? [], libc, fhs ? false,
-#     stopSignal ? null, sbomExtraComponents ? [ ] }
+#     stopSignal ? null, sbomExtraComponents ? [ ], closureAllow ? [ ] }
 # `contents` are language-specific store paths merged at image root (e.g. a
 # runtime relocated under /runtime). `libc` ("musl" | "glibc" | null) is set by
 # mkVariants or the base specs below — flake.nix reads it for the CI matrix and
@@ -104,20 +104,34 @@ rec {
   mkVariants =
     pkgs:
     { versions }:
-    lib.listToAttrs (lib.concatLists (lib.mapAttrsToList (
-      tag: v:
-      map (
-        libc:
-        let
-          libcPkgs = if libc == "musl" then pkgs.pkgsMusl else pkgs;
-        in
-        lib.nameValuePair "${tag}-${libc}" ((v.spec libcPkgs) // { inherit libc; })
-      ) (v.libcs or [ "musl" "glibc" ])
-    ) versions));
+    lib.listToAttrs (
+      lib.concatLists (
+        lib.mapAttrsToList (
+          tag: v:
+          map
+            (
+              libc:
+              let
+                libcPkgs = if libc == "musl" then pkgs.pkgsMusl else pkgs;
+              in
+              lib.nameValuePair "${tag}-${libc}" ((v.spec libcPkgs) // { inherit libc; })
+            )
+            (
+              v.libcs or [
+                "musl"
+                "glibc"
+              ]
+            )
+        ) versions
+      )
+    );
 
   # Compiled-binary bases (single-variant, entrypoint runs /app/app). The libc is
   # the image's identity, so these are not on the libc-tag axis.
-  staticSpec = { entrypoint = [ "/app/app" ]; libc = null; }; # scratch-like, no loader
+  staticSpec = {
+    entrypoint = [ "/app/app" ];
+    libc = null;
+  }; # scratch-like, no loader
   glibcSpec = {
     entrypoint = [ "/app/app" ];
     libc = "glibc";
@@ -150,6 +164,52 @@ rec {
     ++ lib.optional (spec.fhs or false) (mkLibcEnv pkgs (spec.libc or "glibc"))
     ++ (spec.contents or [ ]);
 
+  # --- contents-closure guard ------------------------------------------------
+
+  # Store-path NAMES no varde image may ship: shells (the distroless promise)
+  # and -dev outputs (build-material leakage). POSIX EREs matched against the
+  # <name> part of /nix/store/<hash>-<name>.
+  closureDenyPatterns = [
+    "^(bash|dash|busybox|mksh|zsh|toybox)-"
+    "-dev$"
+  ];
+
+  # Fails the image build if the CONTENTS' runtime closure ships anything
+  # matching closureDenyPatterns. Deliberately checks the contents closure via
+  # closureInfo, NOT the image derivation's build-time closure — the latter
+  # always contains bash. Per-image exemptions via spec.closureAllow (ERE
+  # list); postgres' deliberate /bin/sh (store name busybox-<version>) is the
+  # sole user. This turns the README's "no shell" from an intention into an
+  # invariant: a nixpkgs bump that grows a shell or a -dev output in any
+  # image's closure turns the build red instead of publishing it.
+  closureGuard =
+    pkgs:
+    { name, spec }:
+    pkgs.runCommand "${name}-closure-guard"
+      {
+        closure = pkgs.closureInfo { rootPaths = imageContents pkgs spec; };
+        denyRegex = lib.concatStringsSep "|" closureDenyPatterns;
+        # "^$" never matches a store-path name; it keeps an empty allow list a
+        # valid ERE.
+        allowRegex = lib.concatStringsSep "|" ((spec.closureAllow or [ ]) ++ [ "^$" ]);
+      }
+      ''
+        bad=0
+        while IFS= read -r p; do
+          nm="''${p#/nix/store/}"
+          nm="''${nm#*-}"
+          if [[ "$nm" =~ $denyRegex ]] && ! [[ "$nm" =~ $allowRegex ]]; then
+            echo "closure guard: forbidden store path in image contents closure: $p" >&2
+            bad=1
+          fi
+        done < "$closure/store-paths"
+        if [ "$bad" != 0 ]; then
+          echo "closure guard: ${name} violates the no-shell/no--dev invariant (see above)" >&2
+          exit 1
+        fi
+        touch "$out"
+      '';
+
   buildImage =
     pkgs:
     {
@@ -158,10 +218,18 @@ rec {
       description,
       spec,
     }:
+    let
+      guard = closureGuard pkgs {
+        name = "${name}-${tag}";
+        inherit spec;
+      };
+    in
     pkgs.dockerTools.buildLayeredImage {
       inherit name tag;
       contents = imageContents pkgs spec;
       extraCommands = ''
+        # Interpolating the closure guard (${guard}) makes it an input of this
+        # layer derivation: the image cannot build unless the guard passed.
         mkdir -p app tmp
         chmod 1777 tmp
         # Contents are merged by symlink, leaving the identity files pointing at
@@ -182,9 +250,7 @@ rec {
         WorkingDir = "/app";
         Entrypoint = spec.entrypoint;
         Env =
-          commonEnv
-          ++ lib.optional (spec.fhs or false) "LD_LIBRARY_PATH=/lib:/lib64"
-          ++ (spec.env or [ ]);
+          commonEnv ++ lib.optional (spec.fhs or false) "LD_LIBRARY_PATH=/lib:/lib64" ++ (spec.env or [ ]);
         Labels = {
           "org.opencontainers.image.title" = name;
           "org.opencontainers.image.description" = description;

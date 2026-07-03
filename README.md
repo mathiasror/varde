@@ -86,6 +86,11 @@ shell-free.
 | Writable paths | `/app`, `/tmp` (sticky) |
 | Scanning | per-image CycloneDX SBOM with NVD CPEs, scanned with grype (see below) |
 
+The shell/package-manager guarantee is **enforced at build time**: a closure
+check fails any image build whose runtime closure contains a shell or a `-dev`
+output (postgres's disclosed static `ash` is the sole, explicit exemption), so
+a nixpkgs bump can never silently ship one.
+
 Images that load **externally-compiled** native code (`python`, `node`, and the
 `glibc`/`musl` bases) also ship that libc's loader + `libstdc++`/`libgcc_s` at
 standard FHS paths (`/lib`, `/lib64`) so manylinux/musllinux wheels, native node

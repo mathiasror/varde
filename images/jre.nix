@@ -13,7 +13,11 @@
 # Built for both libcs where a Temurin build exists: the bare tag (e.g. :21) is
 # musl (Temurin's Alpine build), opt into glibc with :21-glibc. NOTE: :17 is
 # glibc-only — Adoptium ships no aarch64 Alpine/musl JRE for JDK 17.
-{ pkgs, vardeLib, lib }:
+{
+  pkgs,
+  vardeLib,
+  lib,
+}:
 let
   # `p` is the libc's package set (pkgs for glibc, pkgs.pkgsMusl for musl); the
   # musl set resolves temurin-jre-bin-* to Temurin's Alpine/musl prebuilt.
@@ -61,7 +65,24 @@ in
         # gtkSupport wraps java with a desktop LD_LIBRARY_PATH — GTK+3, glib,
         # cairo and their icu/cups/iso-codes tail, ~240MB of closure a headless
         # container never dlopens (and hours of from-source GTK builds on musl).
-        jre = p: attr: jreSpec p (p.${attr}.override { gtkSupport = false; });
+        #
+        # Even with GTK off, temurin wraps EVERY executable in a *shell*
+        # wrapper (bin/java is a bash script exec'ing bin/.java-wrapped) whose
+        # sole remaining payload is cups on LD_LIBRARY_PATH — putting bash in
+        # every JRE image and a bash exec on every container start. Swapping
+        # the wrapper hook for makeBinaryWrapper keeps the behavior (same env
+        # prefix) and drops the shell: bin/java becomes a compiled trampoline.
+        # Cheap: temurin-bin is a prebuilt tarball, so this only re-runs its
+        # install phase, not a JDK build.
+        jre =
+          p: attr:
+          jreSpec p (
+            (p.${attr}.override { gtkSupport = false; }).overrideAttrs (prev: {
+              nativeBuildInputs = map (
+                h: if lib.getName h == "make-shell-wrapper-hook" then p.buildPackages.makeBinaryWrapper else h
+              ) prev.nativeBuildInputs;
+            })
+          );
       in
       {
         # No aarch64 Alpine/musl Temurin for 17 -> glibc-only.
@@ -69,8 +90,12 @@ in
           spec = p: jre p "temurin-jre-bin-17";
           libcs = [ "glibc" ];
         };
-        "21" = { spec = p: jre p "temurin-jre-bin-21"; };
-        "25" = { spec = p: jre p "temurin-jre-bin-25"; };
+        "21" = {
+          spec = p: jre p "temurin-jre-bin-21";
+        };
+        "25" = {
+          spec = p: jre p "temurin-jre-bin-25";
+        };
       };
   };
 }

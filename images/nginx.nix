@@ -12,10 +12,15 @@
 # Contract: COPY your static site into /app (see examples/nginx/). To use your
 # own nginx config, override the entrypoint's -c path or bind-mount over
 # /etc/nginx/nginx.conf.
-{ pkgs, vardeLib, lib }:
+{
+  pkgs,
+  vardeLib,
+  lib,
+}:
 let
   # `p` is the libc's package set (pkgs for glibc, pkgs.pkgsMusl for musl).
-  nginxSpec = p:
+  nginxSpec =
+    p:
     let
       # Config + mime.types at in-image absolute paths (the Nix store is not in
       # the image; mime.types is copied from the nginx package at build time).
@@ -64,6 +69,8 @@ in
   description = "Minimal distroless nginx (non-root, listens on :8080)";
   latest = "latest";
   variants = vardeLib.mkVariants pkgs {
-    versions."latest" = { spec = nginxSpec; };
+    versions."latest" = {
+      spec = nginxSpec;
+    };
   };
 }

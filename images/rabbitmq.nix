@@ -66,7 +66,11 @@
 #
 # Built for both libcs: the bare tag (:latest) is musl; opt into glibc with
 # :latest-glibc.
-{ pkgs, vardeLib, lib }:
+{
+  pkgs,
+  vardeLib,
+  lib,
+}:
 let
   # `p` is the libc's package set (pkgs for glibc, pkgs.pkgsMusl for musl).
   rabbitmqSpec =
@@ -359,6 +363,8 @@ in
   description = "Minimal distroless RabbitMQ message broker";
   latest = "latest";
   variants = vardeLib.mkVariants pkgs {
-    versions."latest" = { spec = rabbitmqSpec; };
+    versions."latest" = {
+      spec = rabbitmqSpec;
+    };
   };
 }

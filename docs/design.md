@@ -27,6 +27,11 @@ library, images default to musl (smaller, fewer CVEs) with glibc opt-in.
 | Timezones | tzdata at `/usr/share/zoneinfo` |
 | Writable paths | `/app`, `/tmp` (sticky) |
 
+The no-shell/no-package-manager row is enforced, not just intended: a
+build-time closure check (`lib/default.nix`) fails any image whose contents
+closure contains a shell or a `-dev` output, with postgres's static `ash` as
+the sole declared exemption (`closureAllow`).
+
 Because there is no shell, the entrypoint runs the application directly. That
 means a self-contained artifact: a fat JAR, a static or dynamically-linked
 binary, or interpreted code plus its already-installed dependencies.
