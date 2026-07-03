@@ -39,21 +39,57 @@ let
         ) (node.buildInputs or [ ])
         ++ [ p.bashNonInteractive ]
       );
+
+      # node links libuvwasi.so at runtime (uvwasi's lib dir is in the RPATH),
+      # but uvwasi's single output also ships headers and a pkg-config file
+      # that reference libuv's DEV output — a transitive -dev leak the strip
+      # below can't cut without breaking the loader. Ship a lib-only copy of
+      # uvwasi and retarget node's RPATH entry at it.
+      uvwasi = lib.findFirst (d: lib.getName d == "uvwasi") null (node.buildInputs or [ ]);
+      uvwasiLib = lib.mapNullable (
+        uv:
+        (p.runCommand "varde-uvwasi-lib" {
+          nativeBuildInputs = [ p.buildPackages.removeReferencesTo ];
+          disallowedRequisites = [ uv ] ++ inertRefs;
+        })
+          ''
+            mkdir -p "$out"
+            cp -a ${uv}/lib "$out/lib"
+            chmod -R u+w "$out/lib"
+            rm -rf "$out/lib/pkgconfig" "$out"/lib/*.la
+            find "$out/lib" -type f -exec remove-references-to \
+              -t ${uv} \
+              ${lib.concatMapStringsSep " " (t: "-t ${t}") inertRefs} \
+              {} +
+          ''
+      ) uvwasi;
       stripped =
         (p.runCommand "varde-node-root-${node.version}" {
-          nativeBuildInputs = [ p.buildPackages.removeReferencesTo ];
-          disallowedRequisites = inertRefs ++ [ node ];
+          nativeBuildInputs = [
+            p.buildPackages.removeReferencesTo
+            p.buildPackages.patchelf
+          ];
+          disallowedRequisites = inertRefs ++ [ node ] ++ lib.optional (uvwasi != null) uvwasi;
         })
           ''
             mkdir -p "$out/runtime/bin"
             cp ${node}/bin/node "$out/runtime/bin/node"
             chmod u+w "$out/runtime/bin/node"
+            ${lib.optionalString (uvwasi != null) ''
+              # Retarget the RPATH's uvwasi entry at the lib-only copy BEFORE
+              # the strip below dummies the original hash out.
+              patchelf --set-rpath \
+                "$(patchelf --print-rpath "$out/runtime/bin/node" | sed "s|${uvwasi}|${uvwasiLib}|g")" \
+                "$out/runtime/bin/node"
+            ''}
             # -t ''${node}: the binary also embeds its own store path
             # (process.config's "node_prefix") — inert config metadata of the
             # same class as the dev echoes, and it must go or this copy's own
-            # disallowedRequisites rejects the build.
+            # disallowedRequisites rejects the build. Same for the leftover
+            # uvwasi /include echoes after the RPATH retarget above.
             remove-references-to \
               -t ${node} \
+              ${lib.optionalString (uvwasi != null) "-t ${uvwasi}"} \
               ${lib.concatMapStringsSep " " (t: "-t ${t}") inertRefs} \
               "$out/runtime/bin/node"
           '';

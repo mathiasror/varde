@@ -69,18 +69,23 @@ in
         # Even with GTK off, temurin wraps EVERY executable in a *shell*
         # wrapper (bin/java is a bash script exec'ing bin/.java-wrapped) whose
         # sole remaining payload is cups on LD_LIBRARY_PATH — putting bash in
-        # every JRE image and a bash exec on every container start. Swapping
-        # the wrapper hook for makeBinaryWrapper keeps the behavior (same env
-        # prefix) and drops the shell: bin/java becomes a compiled trampoline.
-        # Cheap: temurin-bin is a prebuilt tarball, so this only re-runs its
-        # install phase, not a JDK build.
+        # every JRE image, executing it on every container start, and
+        # dragging cups' avahi/gnutls closure (which itself reaches bash)
+        # along. A headless container doesn't print: drop the wrappers
+        # entirely and ship the raw ELFs — the same reasoning as gtkSupport
+        # above. Java's CUPS print service simply fails cleanly if ever
+        # asked. Cheap: temurin-bin is a prebuilt tarball, so this only
+        # re-runs its install phase, not a JDK build.
         jre =
           p: attr:
           jreSpec p (
             (p.${attr}.override { gtkSupport = false; }).overrideAttrs (prev: {
-              nativeBuildInputs = map (
-                h: if lib.getName h == "make-shell-wrapper-hook" then p.buildPackages.makeBinaryWrapper else h
-              ) prev.nativeBuildInputs;
+              postFixup = (prev.postFixup or "") + ''
+                find "$out" -name '.*-wrapped' -type f | while IFS= read -r w; do
+                  b="$(dirname "$w")/$(basename "$w" | sed 's/^\.//; s/-wrapped$//')"
+                  mv "$w" "$b"
+                done
+              '';
             })
           );
       in

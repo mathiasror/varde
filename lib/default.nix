@@ -201,12 +201,33 @@ rec {
         allowRegex = lib.concatStringsSep "|" (allow ++ [ "^$" ]);
       }
       ''
+        # closureInfo's registration file is the full reference graph — per
+        # record: path, narHash, narSize, deriver (may be empty), N, then N
+        # reference lines. Collect reverse edges so a violation names its
+        # referrer, not just the offender.
+        edges=$(mktemp)
+        while IFS= read -r p; do
+          IFS= read -r _narhash
+          IFS= read -r _narsize
+          IFS= read -r _deriver
+          IFS= read -r n
+          i=0
+          while [ "$i" -lt "$n" ]; do
+            IFS= read -r ref
+            [ "$ref" = "$p" ] || printf '%s %s\n' "$ref" "$p" >> "$edges"
+            i=$((i + 1))
+          done
+        done < "$closure/registration"
+
         bad=0
         while IFS= read -r p; do
           nm="''${p#/nix/store/}"
           nm="''${nm#*-}"
           if [[ "$nm" =~ $denyRegex ]] && ! [[ "$nm" =~ $allowRegex ]]; then
             echo "closure guard: forbidden store path in image contents closure: $p" >&2
+            grep -F -- "$p " "$edges" | while IFS= read -r edge; do
+              echo "  referenced by: ''${edge#* }" >&2
+            done
             bad=1
           fi
         done < "$closure/store-paths"

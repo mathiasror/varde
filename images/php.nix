@@ -90,22 +90,52 @@ let
             '';
           });
           gd = p.gd.override { inherit libavif; };
-          swapGd =
+
+          # gettext (linked by ext-gettext for libintl — a real runtime dep on
+          # musl, where libintl doesn't live in the libc) ships bash scripts
+          # in bin/ (gettext.sh, autopoint, gettextize) — the libc-side route
+          # by which a shell entered the musl images. Only lib/ is needed.
+          gettext = p.gettext.overrideAttrs (prev: {
+            postFixup = (prev.postFixup or "") + ''
+              rm -rf "$out/bin"
+            '';
+          });
+
+          # Extension-dependency swaps, applied in the map below: the
+          # buildInputs element is swapped by name, and any configure flag
+          # embedding the old store path is rebuilt fresh (replaceStrings
+          # would keep the original flag's string context, so the stock
+          # package — and its bash-carrying tail — would linger as a build
+          # input of the extension).
+          depSwaps = {
+            gd = {
+              old = "gd";
+              new = gd;
+              flagPrefix = "--with-external-gd=";
+              newFlag = "--with-external-gd=${gd.dev}";
+            };
+            gettext = {
+              old = "gettext";
+              new = gettext;
+              flagPrefix = "--with-gettext=";
+              newFlag = "--with-gettext=${gettext}";
+            };
+          };
+          swapDeps =
             e:
-            if (e.extensionName or "") != "gd" then
+            if !(depSwaps ? ${e.extensionName or ""}) then
               e
             else
+              let
+                s = depSwaps.${e.extensionName};
+              in
               e.overrideAttrs (prev: {
-                buildInputs = map (b: if lib.getName b == "gd" then gd else b) prev.buildInputs;
-                # Rebuilt fresh rather than replaceStrings-rewritten: string
-                # surgery would keep the ORIGINAL flag's string context, so the
-                # stock gd (and its libavif/gdk-pixbuf tail) would linger as a
-                # build input of the extension.
+                buildInputs = map (b: if lib.getName b == s.old then s.new else b) prev.buildInputs;
                 configureFlags = map (
-                  f: if lib.hasPrefix "--with-external-gd=" (toString f) then "--with-external-gd=${gd.dev}" else f
+                  f: if lib.hasPrefix s.flagPrefix (toString f) then s.newFlag else f
                 ) prev.configureFlags;
               });
-          keptFixed = map swapGd kept;
+          keptFixed = map swapDeps kept;
         in
         # On musl, skip every extension's own `make test` — same lesson as
         # images/redis.nix, applied wholesale instead of per-extension
