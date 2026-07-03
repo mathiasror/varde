@@ -24,7 +24,7 @@ Node.js, glibc, and so on) using Nix. Two different kinds of findings:
 - **A CVE in a packaged upstream component** — these flow in automatically. The
   images are rebuilt weekly against the latest nixpkgs, so upstream fixes land
   without any change to this repo, and every image ships a CycloneDX SBOM you can
-  scan yourself (see the README). A fix ultimately belongs upstream/in nixpkgs;
+  scan yourself with grype (see the README). A fix ultimately belongs upstream/in nixpkgs;
   you're still welcome to flag one here if an image is lagging.
 
 ## Verifying what you pulled

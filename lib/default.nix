@@ -4,7 +4,7 @@
 #   { pkgs, vardeLib, lib }: { description; latest?; variants = { "<tag>" = spec; }; }
 # where each `spec` is:
 #   { contents ? [], entrypoint, cmd ? null, env ? [], libc, fhs ? false,
-#     stopSignal ? null }
+#     stopSignal ? null, sbomExtraComponents ? [ ] }
 # `contents` are language-specific store paths merged at image root (e.g. a
 # runtime relocated under /runtime). `libc` ("musl" | "glibc" | null) is set by
 # mkVariants or the base specs below — flake.nix reads it for the CI matrix and
@@ -200,9 +200,41 @@ rec {
       };
     };
 
+  # One hand-authored CycloneDX component carrying an exact NVD CPE identity.
+  # `product` is the CPE product field (may contain CPE escapes, e.g.
+  # erlang\/otp); `name` is the plain component/purl name when they differ.
+  sbomComponent =
+    {
+      vendor,
+      product,
+      version,
+      name ? product,
+    }:
+    {
+      type = "application";
+      "bom-ref" = "varde-extra-${name}-${version}";
+      inherit name version;
+      cpe = "cpe:2.3:a:${vendor}:${product}:${version}:*:*:*:*:*:*:*";
+      purl = "pkg:generic/${name}@${version}";
+    };
+
   # CycloneDX SBOM (with CPEs) over the runtime closure of everything in the
   # image — system packages (glibc, zlib, …) plus the language runtime. Exposed
   # as an app because sbomnix needs nix-store access (cannot run in a sandbox).
+  #
+  # The generated SBOM is best-effort in two ways this app corrects by
+  # appending hand-authored components:
+  #   1. sbomnix derives every CPE as vendor = product = pname, but NVD files
+  #      CVEs under normalized vendors (gnu:glibc, oracle:mysql,
+  #      python_software_foundation:cpython, f5:nginx, …) — a wrong vendor
+  #      matches nothing, silently. The libc component is appended here from
+  #      spec.libc; runtimes with a non-obvious NVD identity append theirs via
+  #      spec.sbomExtraComponents (find the identity with
+  #      `grype db search pkg <name>`), with the version wired to the same
+  #      package binding that builds the image so a nixpkgs bump moves both.
+  #   2. Pruned runtimes (mysql, rabbitmq/erlang — and the stripped python/node
+  #      copies) sever their store references to the upstream package, so the
+  #      shipped software is not even a named component in its own closure.
   buildSbomApp =
     pkgs:
     { name, spec }:
@@ -211,6 +243,26 @@ rec {
         mkdir -p "$out"
         for p in $contents; do ln -s "$p" "$out/$(basename "$p")"; done
       '';
+      libcComponents =
+        if (spec.libc or null) == "musl" then
+          [
+            (sbomComponent {
+              vendor = "musl-libc";
+              product = "musl";
+              version = pkgs.musl.version;
+            })
+          ]
+        else if (spec.libc or null) == "glibc" then
+          [
+            (sbomComponent {
+              vendor = "gnu";
+              product = "glibc";
+              version = pkgs.glibc.version;
+            })
+          ]
+        else
+          [ ]; # varde-static ships no libc
+      extraComponents = libcComponents ++ (spec.sbomExtraComponents or [ ]);
       app = pkgs.writeShellApplication {
         name = "${name}-sbom";
         # sbomnix 1.8 parses `nix derivation show` and requires the modern
@@ -225,6 +277,11 @@ rec {
           # Run in a temp dir: sbomnix also drops sbom.spdx.json/sbom.csv in CWD.
           work="$(mktemp -d)"
           ( cd "$work" && ${pkgs.sbomnix}/bin/.sbomnix-wrapped "${closure}" --cdx "$out" )
+          ${lib.optionalString (extraComponents != [ ]) ''
+            # NVD-identity components (see the comment on buildSbomApp).
+            ${pkgs.jq}/bin/jq --argjson extra ${lib.escapeShellArg (builtins.toJSON extraComponents)} \
+              '.components += $extra' "$out" > "$out.tmp" && mv "$out.tmp" "$out"
+          ''}
           echo "Wrote CycloneDX SBOM (system packages + runtime) to $out"
         '';
       };

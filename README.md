@@ -84,7 +84,7 @@ shell-free.
 | TLS | CA bundle at `/etc/ssl/certs/ca-certificates.crt` (`SSL_CERT_FILE` set) |
 | Timezones | tzdata at `/usr/share/zoneinfo` (`TZDIR` set) |
 | Writable paths | `/app`, `/tmp` (sticky) |
-| Scanning | per-image CycloneDX SBOM for Trivy (see below) |
+| Scanning | per-image CycloneDX SBOM with NVD CPEs, scanned with grype (see below) |
 
 Images that load **externally-compiled** native code (`python`, `node`, and the
 `glibc`/`musl` bases) also ship that libc's loader + `libstdc++`/`libgcc_s` at
@@ -152,29 +152,38 @@ List everything that exists: `nix eval --json .#ciMatrix` (each entry carries it
 > extra-trusted-public-keys = varde.cachix.org-1:oUZD/OJtc/pTMrpe/p7Ax/2eLhbphON1O5mWRbvWa84=
 > ```
 
-## Vulnerability scanning (Trivy)
+## Vulnerability scanning (grype)
 
-A distroless image has **no OS package database**, so `trivy image` alone reports
-no system packages. We close that gap with Nix's exact closure: for every image,
-[`sbomnix`](https://github.com/tiiuae/sbomnix) emits a **CycloneDX SBOM with CPEs**
-covering the system packages (glibc/musl, zlib, …) and the language runtime.
+A distroless image has **no OS package database**, so an image scanner alone
+reports no system packages. We close that gap with Nix's exact closure: for
+every image, [`sbomnix`](https://github.com/tiiuae/sbomnix) emits a **CycloneDX
+SBOM with CPEs** covering the system packages (glibc/musl, zlib, …) and the
+language runtime, and the SBOM app corrects each component's CPE to the exact
+identity NVD actually files CVEs under (`gnu:glibc`, `oracle:mysql`,
+`python_software_foundation:cpython`, …) — a wrong vendor string matches
+nothing, silently. Scan with [grype](https://github.com/anchore/grype), which
+matches those CPEs against NVD:
 
 ```bash
 # System packages + runtime, via the SBOM:
 nix run .#sbom-jre-21-musl -- sbom.cdx.json
-trivy sbom sbom.cdx.json
+grype sbom:sbom.cdx.json
 
 # Your app's own dependencies, once the app image is built:
-trivy image ghcr.io/mathiasror/your-app:tag
+grype ghcr.io/mathiasror/your-app:tag
 ```
 
-`trivy image` natively reads app dependencies from JARs, `node_modules`,
-Python dist-info, and the build info embedded in **Go and Rust binaries** — so the
-final app image is scannable too. CI runs both scans on every build; findings are
-in the build log and the SBOM is uploaded as a build artifact. Scanning is
-**report-only** for these base images (so they publish with their findings
-visible); enforce hard gates in your *app* image, where you control the
-dependency set.
+`grype <image>` natively reads app dependencies from JARs, `node_modules`,
+Python dist-info, and the build info embedded in **Go binaries** (and Rust
+binaries built with `cargo auditable`) — so the final app image is scannable
+too. CI scans every SBOM with grype on every build, guarded by a known-CVE
+canary fixture: if the scanner ever parses these SBOMs to zero findings, the
+build fails instead of reporting clean. Findings are in the build log and the
+SBOM is uploaded as a build artifact. Scanning is **report-only** for these
+base images (so they publish with their findings visible); enforce hard gates
+in your *app* image, where you control the dependency set. CPE matching of Nix
+store contents against NVD is best-effort — expect occasional false positives
+and misses compared to a distro package database.
 
 > SARIF upload to the GitHub **Security** tab is wired up but non-fatal — scan
 > findings land under **Security → Code scanning** per image/arch. (On a private
@@ -220,8 +229,9 @@ data-driven from the flake:
 1. **setup** — reads `.#ciMatrix`, `.#latestTags`, and `.#imageAliases`, crosses
    every image/variant (including libc) with `amd64` + `arm64`.
 2. **build** — native runners (`ubuntu-latest` / `ubuntu-24.04-arm`): build the
-   image, generate + Trivy-scan the SBOM, scan the image, smoke-test it, push
-   per-arch tags to GHCR (skipped on PRs).
+   image, generate the SBOM, grype-scan it (behind a known-CVE canary),
+   Trivy-scan the image filesystem, smoke-test it, push per-arch tags to GHCR
+   (skipped on PRs).
 3. **manifest** — assembles multi-arch lists per libc tag, the bare-version and
    `:latest` / `:latest-glibc` aliases, and the `varde-go` / `varde-rust` alias
    digests.
@@ -318,7 +328,7 @@ lib/default.nix                 # scaffolding + mkLibcEnv, mkVariants, buildImag
 images/<name>.nix               # one module per image (+ images/nginx.conf)
 examples/<image>/<variant>/     # buildable "drop your app in" examples
 scripts/e2e.sh                  # build examples on local bases, smoke + size budgets
-.github/workflows/build.yml     # data-driven matrix build -> Trivy -> GHCR
+.github/workflows/build.yml     # data-driven matrix build -> grype -> GHCR
 .github/workflows/e2e.yml       # build + smoke-test the examples
 .github/workflows/pages.yml     # deploy the landing page to GitHub Pages
 site/                           # landing page (static, no build step)

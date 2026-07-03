@@ -47,6 +47,17 @@ let
         "daemon off;"
       ];
       env = [ "PATH=/runtime/bin" ];
+
+      # SBOM: NVD files current nginx CVEs under vendor `f5` (nginx:nginx
+      # stopped being used for new entries after the F5 acquisition), so the
+      # vendor=name CPE sbomnix derives misses them. Scan metadata only.
+      sbomExtraComponents = [
+        (vardeLib.sbomComponent {
+          vendor = "f5";
+          product = "nginx";
+          version = p.nginx.version;
+        })
+      ];
     };
 in
 {

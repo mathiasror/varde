@@ -148,6 +148,18 @@ let
       env = [ "PATH=/runtime/bin" ];
       # no cmd: defaults come from /etc/my.cnf (see above); `docker run <img>
       # <args>` appends mysqld flags, which override the config file.
+
+      # SBOM: the pruned /runtime severed its reference to ${mysql} (above), so
+      # the server would not be a named component in its own SBOM — and NVD
+      # files MySQL CVEs under vendor `oracle`, not the vendor=name CPE sbomnix
+      # would derive. Scan metadata only; never enters image contents.
+      sbomExtraComponents = [
+        (vardeLib.sbomComponent {
+          vendor = "oracle";
+          product = "mysql";
+          version = mysql.version;
+        })
+      ];
     };
 in
 {

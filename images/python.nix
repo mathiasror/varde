@@ -22,6 +22,17 @@ let
       "PYTHONUNBUFFERED=1" # flush stdout/stderr immediately for container logs
     ];
     fhs = true; # manylinux (glibc) / musllinux (musl) wheels load native .so extensions
+
+    # SBOM: NVD files current CPython CVEs under
+    # `python_software_foundation:cpython`, so the vendor=name CPE sbomnix
+    # derives (python3:python3) matches nothing. Scan metadata only.
+    sbomExtraComponents = [
+      (vardeLib.sbomComponent {
+        vendor = "python_software_foundation";
+        product = "cpython";
+        version = py.version;
+      })
+    ];
   };
 in
 {

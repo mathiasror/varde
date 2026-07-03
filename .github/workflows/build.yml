@@ -1,8 +1,9 @@
 name: build-image
 
 # Builds every varde image discovered in images/*.nix — for each variant and on
-# native amd64 + arm64 runners — scans each with Trivy (system packages + runtime
-# via SBOM, plus an image filesystem scan), publishes per-arch tags to GHCR,
+# native amd64 + arm64 runners — scans each with grype (system packages + runtime
+# via the SBOM's CPEs, guarded by a known-CVE canary) plus a Trivy filesystem
+# scan (secrets/artifacts), publishes per-arch tags to GHCR,
 # keyless-signs them and attaches a CycloneDX SBOM + SLSA build-provenance
 # attestation (cosign + GitHub OIDC), and stitches multi-arch + :latest manifest
 # lists (signing each index).
@@ -27,6 +28,7 @@ on:
       - "flake.nix"
       - "flake.lock"
       - ".github/workflows/build.yml"
+      - ".github/canary/**"
   pull_request:
     branches: [main]
     # NOTE: if these jobs ever become *required* status checks, a path-filtered
@@ -37,6 +39,7 @@ on:
       - "flake.nix"
       - "flake.lock"
       - ".github/workflows/build.yml"
+      - ".github/canary/**"
   workflow_dispatch:
   schedule:
     - cron: "0 6 * * 1" # weekly rebuild for fresh CVE fixes
@@ -58,8 +61,6 @@ concurrency:
 
 env:
   REGISTRY: ghcr.io
-  TRIVY_USERNAME: ${{ github.actor }}
-  TRIVY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
 
 jobs:
   setup:
@@ -222,31 +223,68 @@ jobs:
           SBOM: ${{ matrix.sbomName }}
         run: nix run ".#${SBOM}" -- sbom.cdx.json
 
-      - name: "Trivy: system packages + runtime (SBOM scan)"
+      - name: SBOM sanity (non-empty component list)
+        # A structurally-valid-but-empty SBOM would make the scan below a
+        # silent no-op; fail fast instead.
+        run: jq -e '.components | length > 0' sbom.cdx.json >/dev/null
+
+      - name: Scanner canary (known-CVE fixture must produce findings)
+        run: |
+          # Guard against a silently no-op scanner — the exact failure mode this
+          # scanner replaced: trivy parsed these SBOMs to zero packages (it has
+          # no CPE matching and no pkg:nix support) and reported clean forever.
+          # The committed fixture carries one CPE-matched component (openssl
+          # 3.0.7) and one purl-matched one (log4j-core 2.14.1); BOTH matching
+          # paths must yield findings or the job fails. CPE matching is the
+          # path the varde SBOMs rely on.
+          nix run --inputs-from . nixpkgs#grype -- -o json \
+            sbom:.github/canary/canary-sbom.cdx.json > "$RUNNER_TEMP/canary-matches.json"
+          for c in openssl log4j-core; do
+            n=$(jq --arg c "$c" '[.matches[] | select(.artifact.name == $c)] | length' "$RUNNER_TEMP/canary-matches.json")
+            echo "canary findings for $c: $n"
+            [ "$n" -ge 1 ] || { echo "grype canary: zero findings for $c — scanner or DB is broken" >&2; exit 1; }
+          done
+
+      - name: "Grype: system packages + runtime (SBOM scan)"
+        env:
+          IMAGE: ${{ matrix.image }}
         run: |
           # Report-only: a base image should still publish so its SBOM/SARIF stays
           # visible (Security tab) for downstream to act on. Enforce hard gates in
-          # the *app* image, not here.
-          nix run --inputs-from . nixpkgs#trivy -- sbom --scanners vuln --severity HIGH,CRITICAL sbom.cdx.json
-          nix run --inputs-from . nixpkgs#trivy -- sbom --scanners vuln \
-            --format sarif --output trivy-sbom.sarif sbom.cdx.json
+          # the *app* image, not here (grype only gates when --fail-on is passed,
+          # which it deliberately is not). Unlike trivy there is no display
+          # severity filter; the table lists all severities.
+          nix run --inputs-from . nixpkgs#grype -- \
+            -o table -o sarif=grype-sbom.sarif sbom:sbom.cdx.json
+          # grype leaves artifactLocation.uri empty for SBOM inputs, and GitHub
+          # code scanning drops results without a file path — anchor findings to
+          # this image's Nix module.
+          jq --arg uri "images/${IMAGE}.nix" \
+            '(.runs[0].results[]?.locations[]?.physicalLocation.artifactLocation.uri) |= (if . == "" then $uri else . end)' \
+            grype-sbom.sarif > grype-sbom.sarif.tmp && mv grype-sbom.sarif.tmp grype-sbom.sarif
 
       - name: "Trivy: image filesystem (app artifacts, secrets, misconfig)"
+        env:
+          # Only for trivy's vulnerability-DB pulls from ghcr.io (anonymous
+          # pulls hit GHCR rate limits); scoped to this step on purpose.
+          TRIVY_USERNAME: ${{ github.actor }}
+          TRIVY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
         run: |
           nix run --inputs-from . nixpkgs#trivy -- image --input result \
             --format sarif --output trivy-image.sarif --severity HIGH,CRITICAL
 
       # SARIF -> Security tab needs code scanning, which private repos only get
       # with GitHub Advanced Security. Keep it non-fatal so builds still publish;
-      # Trivy findings remain in the step log and the SBOM artifact regardless.
+      # scan findings remain in the step log and the SBOM artifact regardless
+      # (and a genuinely broken scanner fails the canary step above, hard).
       # `always()` alone spams "Path does not exist" annotations when the build
       # step failed and the SARIF was never written — only upload what exists.
       - name: Upload SBOM SARIF
-        if: ${{ !cancelled() && hashFiles('trivy-sbom.sarif') != '' }}
+        if: ${{ !cancelled() && hashFiles('grype-sbom.sarif') != '' }}
         continue-on-error: true
         uses: github/codeql-action/upload-sarif@v4
         with:
-          sarif_file: trivy-sbom.sarif
+          sarif_file: grype-sbom.sarif
           category: sbom-${{ matrix.image }}-${{ matrix.tag }}-${{ matrix.arch }}
 
       - name: Upload image SARIF
