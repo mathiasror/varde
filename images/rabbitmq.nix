@@ -66,7 +66,11 @@
 #
 # Built for both libcs: the bare tag (:latest) is musl; opt into glibc with
 # :latest-glibc.
-{ pkgs, vardeLib, lib }:
+{
+  pkgs,
+  vardeLib,
+  lib,
+}:
 let
   # `p` is the libc's package set (pkgs for glibc, pkgs.pkgsMusl for musl).
   rabbitmqSpec =
@@ -332,12 +336,35 @@ let
       ];
       # no fhs: every ELF (beam.smp, erlexec, the shims) finds its libs via
       # RPATH.
+
+      # SBOM: runtime (disallowedRequisites erlang, above) and dist
+      # (allowedReferences ["out"]) deliberately sever their references to the
+      # source packages, so neither the broker nor OTP would be named
+      # components in their own SBOM. NVD identities: recent RabbitMQ CVEs are
+      # keyed under vendor `vmware` (dual-keyed with pivotal_software using
+      # identical version constraints); OTP's sparse NVD coverage sits under
+      # `erlang:erlang\/otp`. Scan metadata only; never enters image contents.
+      sbomExtraComponents = [
+        (vardeLib.sbomComponent {
+          vendor = "vmware";
+          product = "rabbitmq";
+          version = rabbitmq.version;
+        })
+        (vardeLib.sbomComponent {
+          vendor = "erlang";
+          product = "erlang\\/otp";
+          name = "erlang-otp";
+          version = erlang.version;
+        })
+      ];
     };
 in
 {
   description = "Minimal distroless RabbitMQ message broker";
   latest = "latest";
   variants = vardeLib.mkVariants pkgs {
-    versions."latest" = { spec = rabbitmqSpec; };
+    versions."latest" = {
+      spec = rabbitmqSpec;
+    };
   };
 }

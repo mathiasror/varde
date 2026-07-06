@@ -13,7 +13,7 @@ library, images default to musl (smaller, fewer CVEs) with glibc opt-in.
 - amd64 or arm64 selectable by tag.
 - musl by default, glibc opt-in — a smaller libc where the workload allows it.
 - Easy to use: copy a self-contained artifact in, done.
-- Scannable by Trivy so vulnerable dependencies can be tracked.
+- Scannable with grype so vulnerable dependencies can be tracked.
 - Adding a new image should need no changes to the flake or CI.
 
 ## Image contract
@@ -26,6 +26,11 @@ library, images default to musl (smaller, fewer CVEs) with glibc opt-in.
 | TLS | CA bundle at `/etc/ssl/certs/ca-certificates.crt` |
 | Timezones | tzdata at `/usr/share/zoneinfo` |
 | Writable paths | `/app`, `/tmp` (sticky) |
+
+The no-shell/no-package-manager row is enforced, not just intended: a
+build-time closure check (`lib/default.nix`) fails any image whose contents
+closure contains a shell or a `-dev` output, with postgres's static `ash` as
+the sole declared exemption (`closureAllow`).
 
 Because there is no shell, the entrypoint runs the application directly. That
 means a self-contained artifact: a fat JAR, a static or dynamically-linked
@@ -93,12 +98,21 @@ static binary needs no loader, and nixpkgs binaries find their libs via RPATH.
 
 ## SBOM and scanning
 
-A distroless image has no OS package database, so `trivy image` alone finds no
-system packages. Nix knows the exact closure, so `sbomnix` emits a CycloneDX SBOM
-(with CPEs) covering the system packages (glibc or musl, zlib, …) and the
-runtime. The SBOM is generated as build metadata, kept out of the image, and
-scanned with `trivy sbom`. An application's own dependencies are covered natively
-by `trivy image` once its image is built.
+A distroless image has no OS package database, so an image scanner alone finds
+no system packages. Nix knows the exact closure, so `sbomnix` emits a CycloneDX
+SBOM (with CPEs) covering the system packages (glibc or musl, zlib, …) and the
+runtime. Where NVD files a component under a different vendor than sbomnix's
+vendor=name guess (gnu:glibc, oracle:mysql, python_software_foundation:cpython,
+f5:nginx, …) — or where a pruned runtime severed the store reference that would
+have named it at all (mysql, rabbitmq/erlang) — the SBOM app appends a
+hand-authored component with the exact NVD CPE, versioned from the same package
+binding that builds the image. The SBOM is generated as build metadata, kept
+out of the image, and scanned with `grype sbom:…`; CI guards the scanner itself
+with a known-CVE canary fixture that must produce findings, so a silently no-op
+scan fails the build instead of reporting clean. An application's own
+dependencies are covered natively by `grype <image>` once its image is built.
+CPE-based matching of Nix store contents is best-effort — expect some noise
+relative to a distro package database.
 
 ## CI and tagging
 
@@ -119,7 +133,9 @@ Registry tags: `:<tag>-<libc>` (a multi-arch manifest list) and
 `:<tag>-<libc>-<arch>` per-arch; a bare `:<tag>` and `:latest` aliasing the
 default libc (musl if built, else glibc); `:latest-glibc`; and the `varde-go` /
 `varde-rust` alias images mirroring `varde-static` / `varde-glibc`. A weekly
-rebuild against the latest nixpkgs picks up CVE fixes.
+job commits a `flake.lock` bump to `main` and builds from that commit, so CVE
+fixes flow through and every published image corresponds to a commit whose
+lock reproduces it.
 
 A separate `e2e.yml` workflow builds every example in `examples/<image>/<variant>/`
 on top of a locally-built base, smoke-tests that the app runs, and asserts a

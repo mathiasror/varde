@@ -53,7 +53,11 @@
 #   2) run:            docker run -d  -v mysql-data:/app -p 3306:3306 <img>
 # Health check: docker exec <c> /runtime/bin/mysqladmin -u root ping
 # (see examples/mysql/simple for a build-time-initialized demo).
-{ pkgs, vardeLib, lib }:
+{
+  pkgs,
+  vardeLib,
+  lib,
+}:
 let
   # `p` is the libc's package set; only glibc is enabled (see header).
   mysqlSpec =
@@ -66,42 +70,45 @@ let
       # does not drag the full 302MB package (and its leaked build-tool refs)
       # back into the image closure; /etc/my.cnf re-points every default that
       # relied on it.
-      runtime = p.runCommand "varde-mysql-root-${mysql.version}" {
-        nativeBuildInputs = [ p.removeReferencesTo ];
-      } ''
-        mkdir -p "$out/runtime/bin" "$out/runtime/lib/mysql" "$out/runtime/share/mysql"
+      runtime =
+        p.runCommand "varde-mysql-root-${mysql.version}"
+          {
+            nativeBuildInputs = [ p.removeReferencesTo ];
+          }
+          ''
+            mkdir -p "$out/runtime/bin" "$out/runtime/lib/mysql" "$out/runtime/share/mysql"
 
-        # Server + the ops tools you actually exec in a container: health
-        # checks (mysqladmin ping), SQL administration (mysql) and backups
-        # (mysqldump). Everything else in bin/ is test tooling, MyISAM-era
-        # utilities, or scripts that need a shell (mysqld_safe & co).
-        for b in mysqld mysql mysqladmin mysqldump; do
-          cp -a ${mysql}/bin/"$b" "$out/runtime/bin/"
-        done
+            # Server + the ops tools you actually exec in a container: health
+            # checks (mysqladmin ping), SQL administration (mysql) and backups
+            # (mysqldump). Everything else in bin/ is test tooling, MyISAM-era
+            # utilities, or scripts that need a shell (mysqld_safe & co).
+            for b in mysqld mysql mysqladmin mysqldump; do
+              cp -a ${mysql}/bin/"$b" "$out/runtime/bin/"
+            done
 
-        # Production plugins/components only — the nixpkgs build also installs
-        # MySQL's test/example plugins, which are dead weight and attack
-        # surface in a distroless image.
-        cp -a ${mysql}/lib/mysql/plugin "$out/runtime/lib/mysql/plugin"
-        # cp -a keeps the store's read-only dir modes; rm needs writable dirs.
-        chmod -R u+w "$out/runtime/lib/mysql/plugin"
-        rm -f "$out/runtime/lib/mysql/plugin"/*test* \
-              "$out/runtime/lib/mysql/plugin"/*example* \
-              "$out/runtime/lib/mysql/plugin"/*mock* \
-              "$out/runtime/lib/mysql/plugin"/qa_auth_*.so \
-              "$out/runtime/lib/mysql/plugin"/auth.so \
-              "$out/runtime/lib/mysql/plugin"/mypluglib.so \
-              "$out/runtime/lib/mysql/plugin"/conflicting_variables.so \
-              "$out/runtime/lib/mysql/plugin"/adt_null.so \
-              "$out/runtime/lib/mysql/plugin"/component_udf_*.so
+            # Production plugins/components only — the nixpkgs build also installs
+            # MySQL's test/example plugins, which are dead weight and attack
+            # surface in a distroless image.
+            cp -a ${mysql}/lib/mysql/plugin "$out/runtime/lib/mysql/plugin"
+            # cp -a keeps the store's read-only dir modes; rm needs writable dirs.
+            chmod -R u+w "$out/runtime/lib/mysql/plugin"
+            rm -f "$out/runtime/lib/mysql/plugin"/*test* \
+                  "$out/runtime/lib/mysql/plugin"/*example* \
+                  "$out/runtime/lib/mysql/plugin"/*mock* \
+                  "$out/runtime/lib/mysql/plugin"/qa_auth_*.so \
+                  "$out/runtime/lib/mysql/plugin"/auth.so \
+                  "$out/runtime/lib/mysql/plugin"/mypluglib.so \
+                  "$out/runtime/lib/mysql/plugin"/conflicting_variables.so \
+                  "$out/runtime/lib/mysql/plugin"/adt_null.so \
+                  "$out/runtime/lib/mysql/plugin"/component_udf_*.so
 
-        # Error messages (english only) + character set definitions.
-        cp -a ${mysql}/share/mysql/english  "$out/runtime/share/mysql/english"
-        cp -a ${mysql}/share/mysql/charsets "$out/runtime/share/mysql/charsets"
+            # Error messages (english only) + character set definitions.
+            cp -a ${mysql}/share/mysql/english  "$out/runtime/share/mysql/english"
+            cp -a ${mysql}/share/mysql/charsets "$out/runtime/share/mysql/charsets"
 
-        chmod -R u+w "$out"
-        find "$out" -type f -exec remove-references-to -t ${mysql} {} +
-      '';
+            chmod -R u+w "$out"
+            find "$out" -type f -exec remove-references-to -t ${mysql} {} +
+          '';
 
       # Baked defaults. mysqld reads /etc/my.cnf before anything else, for
       # BOTH `--initialize-insecure` and normal starts, and command-line args
@@ -148,6 +155,18 @@ let
       env = [ "PATH=/runtime/bin" ];
       # no cmd: defaults come from /etc/my.cnf (see above); `docker run <img>
       # <args>` appends mysqld flags, which override the config file.
+
+      # SBOM: the pruned /runtime severed its reference to ${mysql} (above), so
+      # the server would not be a named component in its own SBOM — and NVD
+      # files MySQL CVEs under vendor `oracle`, not the vendor=name CPE sbomnix
+      # would derive. Scan metadata only; never enters image contents.
+      sbomExtraComponents = [
+        (vardeLib.sbomComponent {
+          vendor = "oracle";
+          product = "mysql";
+          version = mysql.version;
+        })
+      ];
     };
 in
 {

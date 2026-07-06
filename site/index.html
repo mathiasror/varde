@@ -330,7 +330,7 @@
               <li>Runs as <strong>1000:1000</strong>, non-root</li>
               <li><strong>musl by default</strong> — <code class="inline">-glibc</code> tag to opt in</li>
               <li>Multi-arch <strong>amd64 + arm64</strong> (<code class="inline">:21-musl-arm64</code>)</li>
-              <li>CycloneDX <strong>SBOM with CPEs</strong> for Trivy</li>
+              <li>CycloneDX <strong>SBOM with NVD CPEs</strong> — scan with grype</li>
               <li>Rebuilt <strong>weekly</strong> so CVE fixes flow through</li>
             </ul>
           </li>
@@ -376,8 +376,8 @@
             <span class="feature__icon" aria-hidden="true">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m20.5 20.5-4-4"/><path d="M8 11h6"/></svg>
             </span>
-            <h3 class="feature__title">Trivy-scannable</h3>
-            <p class="feature__body">A distroless image has no OS package DB — so a Nix-closure CycloneDX SBOM covers system packages <em>and</em> the runtime for Trivy.</p>
+            <h3 class="feature__title">Scannable by design</h3>
+            <p class="feature__body">A distroless image has no OS package DB — so a Nix-closure CycloneDX SBOM covers system packages <em>and</em> the runtime. Scan it with grype.</p>
           </li>
 
           <li class="feature reveal">
@@ -385,7 +385,7 @@
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2.5v19M3.85 7.25l16.3 9.5M20.15 7.25l-16.3 9.5"/><path d="M12 2.5 9.7 4M12 2.5 14.3 4M12 21.5 9.7 20M12 21.5l2.3 1.5"/></svg>
             </span>
             <h3 class="feature__title">Built with Nix</h3>
-            <p class="feature__body">Reproducible builds with exact dependency closures. A weekly CVE-refresh rebuild flows fixes through without a code change.</p>
+            <p class="feature__body">Reproducible builds from a committed lockfile. A weekly lock-bump commit flows CVE fixes through — every image traces to a commit.</p>
           </li>
 
           <li class="feature reveal">
@@ -563,7 +563,7 @@
           <div class="nix-band__lede">
             <p class="eyebrow">Built with Nix</p>
             <h2 class="section__title">Every stone accounted for.</h2>
-            <p class="section__sub">Nix builds each image from an exact dependency closure. That same closure becomes the SBOM — so what Trivy scans is precisely what's in the image, down to glibc and zlib.</p>
+            <p class="section__sub">Nix builds each image from an exact dependency closure. That same closure becomes the SBOM — so what grype scans is precisely what's in the image, down to glibc and zlib.</p>
           </div>
 
           <ol class="flow" aria-label="From build to scan">
@@ -591,7 +591,7 @@
               <span class="flow__icon" aria-hidden="true">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m20.5 20.5-4-4"/><path d="m8.5 11 2 2 4-4"/></svg>
               </span>
-              <h3 class="flow__title">Trivy scans it all</h3>
+              <h3 class="flow__title">grype scans it all</h3>
               <p class="flow__body">System packages and runtime are scannable — not just your app deps.</p>
             </li>
           </ol>

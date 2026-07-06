@@ -15,7 +15,8 @@ connections, no auth). To change anything, override `CMD` — Docker appends it
 to the `ENTRYPOINT ["/runtime/bin/memcached"]`:
 
 ```dockerfile
-CMD ["-m", "256"]   # runs: memcached -m 256
+# runs: memcached -m 256
+CMD ["-m", "256"]
 ```
 
 or pass flags directly on `docker run`:

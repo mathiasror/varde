@@ -21,11 +21,13 @@ Node.js, glibc, and so on) using Nix. Two different kinds of findings:
 - **A vulnerability in varde's own build** — the flake, the image modules, the
   shared library, or the workflows (for example, a misconfiguration that ships a
   shell, runs as root, or leaks a credential). Report these here.
-- **A CVE in a packaged upstream component** — these flow in automatically. The
-  images are rebuilt weekly against the latest nixpkgs, so upstream fixes land
-  without any change to this repo, and every image ships a CycloneDX SBOM you can
-  scan yourself (see the README). A fix ultimately belongs upstream/in nixpkgs;
-  you're still welcome to flag one here if an image is lagging.
+- **A CVE in a packaged upstream component** — these flow in automatically. A
+  weekly job commits a `flake.lock` bump to `main` and rebuilds from that
+  commit, so upstream fixes land without manual work and every published image
+  is traceable to a commit that reproduces it. Every image ships a CycloneDX
+  SBOM you can scan yourself with grype (see the README). A fix ultimately
+  belongs upstream/in nixpkgs; you're still welcome to flag one here if an
+  image is lagging.
 
 ## Verifying what you pulled
 

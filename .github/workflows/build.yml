@@ -1,16 +1,20 @@
 name: build-image
 
 # Builds every varde image discovered in images/*.nix — for each variant and on
-# native amd64 + arm64 runners — scans each with Trivy (system packages + runtime
-# via SBOM, plus an image filesystem scan), publishes per-arch tags to GHCR,
+# native amd64 + arm64 runners — scans each with grype (system packages + runtime
+# via the SBOM's CPEs, guarded by a known-CVE canary) plus a Trivy filesystem
+# scan (secrets/artifacts), publishes per-arch tags to GHCR,
 # keyless-signs them and attaches a CycloneDX SBOM + SLSA build-provenance
 # attestation (cosign + GitHub OIDC), and stitches multi-arch + :latest manifest
 # lists (signing each index).
 # The build matrix and the :latest mapping come straight from the flake
 # (.#ciMatrix / .#latestTags), so adding an image module needs no workflow changes.
 # Pull requests build only the images their diff touches (fail-open — any shared
-# or unrecognized input means the full matrix); push/schedule/dispatch always
-# build everything, so publishes are never scoped.
+# or unrecognized input means the full matrix); push/dispatch always build
+# everything, so publishes are never scoped. The weekly CVE-refresh rebuild
+# lives in bump-lock.yml, which commits a flake.lock bump to main and then
+# dispatches this workflow — so every published image is built from a lock
+# that exists in a commit, and the SLSA provenance sha reproduces the build.
 # A shared Cachix cache holds the from-source musl builds so later runs (and the
 # e2e workflow) pull them instead of recompiling.
 
@@ -18,15 +22,16 @@ on:
   push:
     branches: [main]
     # Build only when image inputs change: doc/site-only pushes skip the whole
-    # matrix (pages.yml covers site/). The weekly cron below is unaffected —
-    # schedule events ignore path filters — and workflow_dispatch remains for a
-    # manual full run. Keep both lists in sync (Actions YAML has no anchors).
+    # matrix (pages.yml covers site/). workflow_dispatch remains for a manual
+    # full run (and is how bump-lock.yml triggers the weekly rebuild). Keep
+    # both lists in sync (Actions YAML has no anchors).
     paths:
       - "images/**"
       - "lib/**"
       - "flake.nix"
       - "flake.lock"
       - ".github/workflows/build.yml"
+      - ".github/canary/**"
   pull_request:
     branches: [main]
     # NOTE: if these jobs ever become *required* status checks, a path-filtered
@@ -37,9 +42,8 @@ on:
       - "flake.nix"
       - "flake.lock"
       - ".github/workflows/build.yml"
+      - ".github/canary/**"
   workflow_dispatch:
-  schedule:
-    - cron: "0 6 * * 1" # weekly rebuild for fresh CVE fixes
 
 permissions:
   contents: read
@@ -58,8 +62,6 @@ concurrency:
 
 env:
   REGISTRY: ghcr.io
-  TRIVY_USERNAME: ${{ github.actor }}
-  TRIVY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
 
 jobs:
   setup:
@@ -77,21 +79,9 @@ jobs:
       - uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
         with:
           determinate: false
-      # On the weekly cron, bump nixpkgs ONCE here and share the resolved lock with
-      # every build job, so all images in a run — and both arches of each tag —
-      # build against a single nixpkgs revision (otherwise each job's own
-      # `nix flake update` could pull a different nixos-unstable tip).
-      - name: Refresh nixpkgs (scheduled only)
-        if: github.event_name == 'schedule'
-        run: nix flake update
-      - name: Upload resolved flake.lock
-        uses: actions/upload-artifact@v7
-        with:
-          name: flake-lock
-          path: flake.lock
       # On PRs, work out which images the diff actually touches so `gen` below
       # can shrink the matrix (one image module -> ~12 jobs instead of ~78).
-      # Publishes are never scoped: push/schedule/dispatch skip this step
+      # Publishes are never scoped: push/dispatch skip this step
       # (empty `images` output -> full matrix), so GHCR always receives every
       # tag a publish run refreshes. Every uncertain path fails OPEN to the
       # full matrix — an oversized PR build wastes minutes, an undersized one
@@ -145,8 +135,8 @@ jobs:
         name: Derive build matrix from the flake
         env:
           # JSON array of image names from the scoping step above; empty on
-          # push/schedule/dispatch (step skipped) and whenever scoping chose
-          # the full matrix.
+          # push/dispatch (step skipped) and whenever scoping chose the full
+          # matrix.
           SCOPED: ${{ steps.scope.outputs.images }}
         run: |
           # Cross each {image,tag,attr,sbomName} with the two native arches.
@@ -205,13 +195,6 @@ jobs:
           name: varde
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
 
-      # Build against the exact flake.lock the setup job resolved (see there), so
-      # this run is internally consistent across images and arches.
-      - name: Fetch shared flake.lock
-        uses: actions/download-artifact@v8
-        with:
-          name: flake-lock
-
       - name: Build image
         env:
           ATTR: ${{ matrix.attr }}
@@ -222,31 +205,68 @@ jobs:
           SBOM: ${{ matrix.sbomName }}
         run: nix run ".#${SBOM}" -- sbom.cdx.json
 
-      - name: "Trivy: system packages + runtime (SBOM scan)"
+      - name: SBOM sanity (non-empty component list)
+        # A structurally-valid-but-empty SBOM would make the scan below a
+        # silent no-op; fail fast instead.
+        run: jq -e '.components | length > 0' sbom.cdx.json >/dev/null
+
+      - name: Scanner canary (known-CVE fixture must produce findings)
+        run: |
+          # Guard against a silently no-op scanner — the exact failure mode this
+          # scanner replaced: trivy parsed these SBOMs to zero packages (it has
+          # no CPE matching and no pkg:nix support) and reported clean forever.
+          # The committed fixture carries one CPE-matched component (openssl
+          # 3.0.7) and one purl-matched one (log4j-core 2.14.1); BOTH matching
+          # paths must yield findings or the job fails. CPE matching is the
+          # path the varde SBOMs rely on.
+          nix run --inputs-from . nixpkgs#grype -- -o json \
+            sbom:.github/canary/canary-sbom.cdx.json > "$RUNNER_TEMP/canary-matches.json"
+          for c in openssl log4j-core; do
+            n=$(jq --arg c "$c" '[.matches[] | select(.artifact.name == $c)] | length' "$RUNNER_TEMP/canary-matches.json")
+            echo "canary findings for $c: $n"
+            [ "$n" -ge 1 ] || { echo "grype canary: zero findings for $c — scanner or DB is broken" >&2; exit 1; }
+          done
+
+      - name: "Grype: system packages + runtime (SBOM scan)"
+        env:
+          IMAGE: ${{ matrix.image }}
         run: |
           # Report-only: a base image should still publish so its SBOM/SARIF stays
           # visible (Security tab) for downstream to act on. Enforce hard gates in
-          # the *app* image, not here.
-          nix run --inputs-from . nixpkgs#trivy -- sbom --scanners vuln --severity HIGH,CRITICAL sbom.cdx.json
-          nix run --inputs-from . nixpkgs#trivy -- sbom --scanners vuln \
-            --format sarif --output trivy-sbom.sarif sbom.cdx.json
+          # the *app* image, not here (grype only gates when --fail-on is passed,
+          # which it deliberately is not). Unlike trivy there is no display
+          # severity filter; the table lists all severities.
+          nix run --inputs-from . nixpkgs#grype -- \
+            -o table -o sarif=grype-sbom.sarif sbom:sbom.cdx.json
+          # grype leaves artifactLocation.uri empty for SBOM inputs, and GitHub
+          # code scanning drops results without a file path — anchor findings to
+          # this image's Nix module.
+          jq --arg uri "images/${IMAGE}.nix" \
+            '(.runs[0].results[]?.locations[]?.physicalLocation.artifactLocation.uri) |= (if . == "" then $uri else . end)' \
+            grype-sbom.sarif > grype-sbom.sarif.tmp && mv grype-sbom.sarif.tmp grype-sbom.sarif
 
       - name: "Trivy: image filesystem (app artifacts, secrets, misconfig)"
+        env:
+          # Only for trivy's vulnerability-DB pulls from ghcr.io (anonymous
+          # pulls hit GHCR rate limits); scoped to this step on purpose.
+          TRIVY_USERNAME: ${{ github.actor }}
+          TRIVY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
         run: |
           nix run --inputs-from . nixpkgs#trivy -- image --input result \
             --format sarif --output trivy-image.sarif --severity HIGH,CRITICAL
 
       # SARIF -> Security tab needs code scanning, which private repos only get
       # with GitHub Advanced Security. Keep it non-fatal so builds still publish;
-      # Trivy findings remain in the step log and the SBOM artifact regardless.
+      # scan findings remain in the step log and the SBOM artifact regardless
+      # (and a genuinely broken scanner fails the canary step above, hard).
       # `always()` alone spams "Path does not exist" annotations when the build
       # step failed and the SARIF was never written — only upload what exists.
       - name: Upload SBOM SARIF
-        if: ${{ !cancelled() && hashFiles('trivy-sbom.sarif') != '' }}
+        if: ${{ !cancelled() && hashFiles('grype-sbom.sarif') != '' }}
         continue-on-error: true
         uses: github/codeql-action/upload-sarif@v4
         with:
-          sarif_file: trivy-sbom.sarif
+          sarif_file: grype-sbom.sarif
           category: sbom-${{ matrix.image }}-${{ matrix.tag }}-${{ matrix.arch }}
 
       - name: Upload image SARIF

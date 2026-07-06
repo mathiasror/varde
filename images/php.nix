@@ -22,7 +22,11 @@
 # Built for both libcs: the bare tag (e.g. :8.4) is musl; opt into glibc with
 # the :8.4-glibc tag. No FHS layout: the interpreter and every extension are
 # Nix-built and find their libraries via RPATH.
-{ pkgs, vardeLib, lib }:
+{
+  pkgs,
+  vardeLib,
+  lib,
+}:
 let
   # Reconfigure the stock nixpkgs php for a distroless container. `p` is the
   # libc's package set (pkgs for glibc, pkgs.pkgsMusl for musl), so added build
@@ -48,17 +52,15 @@ let
       phpAttrsOverrides = final: prev: {
         buildInputs = prev.buildInputs ++ [ p.libxml2.dev ];
         configureFlags =
-          (builtins.filter (
-            f: !(lib.isString f && lib.hasPrefix "PROG_SENDMAIL=" f)
-          ) prev.configureFlags)
+          (builtins.filter (f: !(lib.isString f && lib.hasPrefix "PROG_SENDMAIL=" f)) prev.configureFlags)
           ++ [
             # Core xml/libxml, normally enabled as a side effect of pearSupport.
             "--enable-xml"
             "--with-libxml"
-            # The default PROG_SENDMAIL (system-sendmail) is a bash script — the
-            # last shell reference in the closure. Compile in the conventional
-            # FHS path instead; it doesn't exist in the image, so mail() fails
-            # cleanly (send mail via SMTP from the app instead).
+            # The default PROG_SENDMAIL (system-sendmail) is a bash script
+            # that would drag a shell into the closure. Compile in the
+            # conventional FHS path instead; it doesn't exist in the image, so
+            # mail() fails cleanly (send mail via SMTP from the app instead).
             "PROG_SENDMAIL=/usr/sbin/sendmail"
           ];
       };
@@ -70,6 +72,86 @@ let
           # in its TLS layer), and LDAP from a distroless PHP is niche. Dropped
           # on BOTH libcs so the musl and glibc tags stay behavior-identical.
           kept = builtins.filter (e: e != all.ldap) enabled;
+
+          # libavif's output bundles a gdk-pixbuf loader and a thumbnailer (a
+          # bash wrapper script); through php-gd -> gd -> libavif that dragged
+          # bash, gdk-pixbuf and glib into the image closure. (PROG_SENDMAIL
+          # above killed the previous shell route; this one arrived with gd's
+          # avif support.) Rebuild libavif without the pixbuf side-outputs —
+          # gd only links lib/libavif.so — and point both gd and the gd
+          # extension at the fixed one. The extension's --with-external-gd
+          # configure flag embeds gd.dev's store path, so the flag is
+          # rewritten alongside buildInputs. Done here in the extension map
+          # because php.override { packageOverrides = …; } is silently dropped
+          # for buildEnv results (see the composition note below).
+          libavif = p.libavif.overrideAttrs (prev: {
+            postInstall = (prev.postInstall or "") + ''
+              rm -rf "$out/bin" "$out/libexec" "$out/share/thumbnailers" "$out/lib/gdk-pixbuf-2.0"
+            '';
+          });
+          # libXpm compiles in absolute paths to gzip and uncompress and execs
+          # them to read compressed .xpm files — the final shell route (gzip
+          # ships bash scripts: zgrep, zcat & co): php-gd -> gd -> libXpm ->
+          # gzip -> bash, identically on both libcs. Sever the compressed-XPM
+          # exec paths: plain .xpm keeps working; opening a .xpm.gz/.xpm.Z now
+          # fails cleanly instead of exec'ing a compressor the image doesn't
+          # ship anyway.
+          libxpm = p.libxpm.overrideAttrs (prev: {
+            nativeBuildInputs = (prev.nativeBuildInputs or [ ]) ++ [
+              p.buildPackages.removeReferencesTo
+            ];
+            postFixup = (prev.postFixup or "") + ''
+              find "$out" -type f -exec remove-references-to \
+                -t ${p.gzip} -t ${p.ncompress} {} +
+            '';
+          });
+          gd = p.gd.override { inherit libavif libxpm; };
+
+          # gettext (linked by ext-gettext for libintl — a real runtime dep on
+          # musl, where libintl doesn't live in the libc) ships bash scripts
+          # in bin/ (gettext.sh, autopoint, gettextize) — the libc-side route
+          # by which a shell entered the musl images. Only lib/ is needed.
+          gettext = p.gettext.overrideAttrs (prev: {
+            postFixup = (prev.postFixup or "") + ''
+              rm -rf "$out/bin"
+            '';
+          });
+
+          # Extension-dependency swaps, applied in the map below: the
+          # buildInputs element is swapped by name, and any configure flag
+          # embedding the old store path is rebuilt fresh (replaceStrings
+          # would keep the original flag's string context, so the stock
+          # package — and its bash-carrying tail — would linger as a build
+          # input of the extension).
+          depSwaps = {
+            gd = {
+              old = "gd";
+              new = gd;
+              flagPrefix = "--with-external-gd=";
+              newFlag = "--with-external-gd=${gd.dev}";
+            };
+            gettext = {
+              old = "gettext";
+              new = gettext;
+              flagPrefix = "--with-gettext=";
+              newFlag = "--with-gettext=${gettext}";
+            };
+          };
+          swapDeps =
+            e:
+            if !(depSwaps ? ${e.extensionName or ""}) then
+              e
+            else
+              let
+                s = depSwaps.${e.extensionName};
+              in
+              e.overrideAttrs (prev: {
+                buildInputs = map (b: if lib.getName b == s.old then s.new else b) prev.buildInputs;
+                configureFlags = map (
+                  f: if lib.hasPrefix s.flagPrefix (toString f) then s.newFlag else f
+                ) prev.configureFlags;
+              });
+          keptFixed = map swapDeps kept;
         in
         # On musl, skip every extension's own `make test` — same lesson as
         # images/redis.nix, applied wholesale instead of per-extension
@@ -97,9 +179,14 @@ let
         # dropped for buildEnv results like php83 — verified by drv-hash
         # comparison — so this is the deepest hook available.)
         if p.stdenv.hostPlatform.isMusl then
-          map (e: e.overrideAttrs (_: { doCheck = false; })) kept
+          map (
+            e:
+            e.overrideAttrs (_: {
+              doCheck = false;
+            })
+          ) keptFixed
         else
-          kept
+          keptFixed
       );
 
   phpSpec =
@@ -127,9 +214,15 @@ in
   # of life 2026-12-31; only fully maintained release lines are published.
   variants = vardeLib.mkVariants pkgs {
     versions = {
-      "8.3" = { spec = p: phpSpec p p.php83; };
-      "8.4" = { spec = p: phpSpec p p.php84; };
-      "8.5" = { spec = p: phpSpec p p.php85; };
+      "8.3" = {
+        spec = p: phpSpec p p.php83;
+      };
+      "8.4" = {
+        spec = p: phpSpec p p.php84;
+      };
+      "8.5" = {
+        spec = p: phpSpec p p.php85;
+      };
     };
   };
 }

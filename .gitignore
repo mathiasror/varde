@@ -7,6 +7,8 @@
 *.spdx.json
 *.sarif
 sbom.csv
+# … but the committed scanner-canary fixture is not a generated artifact
+!.github/canary/canary-sbom.cdx.json
 
 # direnv / editor / agent cruft
 /.direnv/

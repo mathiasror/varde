@@ -4,7 +4,7 @@
 #   { pkgs, vardeLib, lib }: { description; latest?; variants = { "<tag>" = spec; }; }
 # where each `spec` is:
 #   { contents ? [], entrypoint, cmd ? null, env ? [], libc, fhs ? false,
-#     stopSignal ? null }
+#     stopSignal ? null, sbomExtraComponents ? [ ], closureAllow ? [ ] }
 # `contents` are language-specific store paths merged at image root (e.g. a
 # runtime relocated under /runtime). `libc` ("musl" | "glibc" | null) is set by
 # mkVariants or the base specs below — flake.nix reads it for the CI matrix and
@@ -104,20 +104,34 @@ rec {
   mkVariants =
     pkgs:
     { versions }:
-    lib.listToAttrs (lib.concatLists (lib.mapAttrsToList (
-      tag: v:
-      map (
-        libc:
-        let
-          libcPkgs = if libc == "musl" then pkgs.pkgsMusl else pkgs;
-        in
-        lib.nameValuePair "${tag}-${libc}" ((v.spec libcPkgs) // { inherit libc; })
-      ) (v.libcs or [ "musl" "glibc" ])
-    ) versions));
+    lib.listToAttrs (
+      lib.concatLists (
+        lib.mapAttrsToList (
+          tag: v:
+          map
+            (
+              libc:
+              let
+                libcPkgs = if libc == "musl" then pkgs.pkgsMusl else pkgs;
+              in
+              lib.nameValuePair "${tag}-${libc}" ((v.spec libcPkgs) // { inherit libc; })
+            )
+            (
+              v.libcs or [
+                "musl"
+                "glibc"
+              ]
+            )
+        ) versions
+      )
+    );
 
   # Compiled-binary bases (single-variant, entrypoint runs /app/app). The libc is
   # the image's identity, so these are not on the libc-tag axis.
-  staticSpec = { entrypoint = [ "/app/app" ]; libc = null; }; # scratch-like, no loader
+  staticSpec = {
+    entrypoint = [ "/app/app" ];
+    libc = null;
+  }; # scratch-like, no loader
   glibcSpec = {
     entrypoint = [ "/app/app" ];
     libc = "glibc";
@@ -150,6 +164,80 @@ rec {
     ++ lib.optional (spec.fhs or false) (mkLibcEnv pkgs (spec.libc or "glibc"))
     ++ (spec.contents or [ ]);
 
+  # --- contents-closure guard ------------------------------------------------
+
+  # Store-path NAMES no varde image may ship: shells (the distroless promise)
+  # and -dev outputs (build-material leakage). POSIX EREs matched against the
+  # <name> part of /nix/store/<hash>-<name>. -bin outputs are deliberately not
+  # banned: utility CLIs (sqlite-bin, zstd-bin) only ever entered a closure
+  # via a propagating -dev referrer, which the -dev ban already severs — and
+  # legitimate contents could plausibly carry a -bin name.
+  closureDenyPatterns = [
+    "^(bash|dash|busybox|mksh|zsh|toybox)-"
+    "-dev$"
+  ];
+
+  # Fails the image build if the CONTENTS' runtime closure ships anything
+  # matching closureDenyPatterns. Deliberately checks the contents closure via
+  # closureInfo, NOT the image derivation's build-time closure — the latter
+  # always contains bash. Per-image exemptions via spec.closureAllow (ERE
+  # list); postgres' deliberate /bin/sh (store name busybox-<version>) is the
+  # sole user. This turns the README's "no shell" from an intention into an
+  # invariant: a nixpkgs bump that grows a shell or a -dev output in any
+  # image's closure turns the build red instead of publishing it.
+  closureGuard =
+    pkgs:
+    {
+      name,
+      contents,
+      allow ? [ ],
+    }:
+    pkgs.runCommand "${name}-closure-guard"
+      {
+        closure = pkgs.closureInfo { rootPaths = contents; };
+        denyRegex = lib.concatStringsSep "|" closureDenyPatterns;
+        # "^$" never matches a store-path name; it keeps an empty allow list a
+        # valid ERE.
+        allowRegex = lib.concatStringsSep "|" (allow ++ [ "^$" ]);
+      }
+      ''
+        # closureInfo's registration file is the full reference graph — per
+        # record: path, narHash, narSize, deriver (may be empty), N, then N
+        # reference lines. Collect reverse edges so a violation names its
+        # referrer, not just the offender.
+        edges=$(mktemp)
+        while IFS= read -r p; do
+          IFS= read -r _narhash
+          IFS= read -r _narsize
+          IFS= read -r _deriver
+          IFS= read -r n
+          i=0
+          while [ "$i" -lt "$n" ]; do
+            IFS= read -r ref
+            [ "$ref" = "$p" ] || printf '%s %s\n' "$ref" "$p" >> "$edges"
+            i=$((i + 1))
+          done
+        done < "$closure/registration"
+
+        bad=0
+        while IFS= read -r p; do
+          nm="''${p#/nix/store/}"
+          nm="''${nm#*-}"
+          if [[ "$nm" =~ $denyRegex ]] && ! [[ "$nm" =~ $allowRegex ]]; then
+            echo "closure guard: forbidden store path in image contents closure: $p" >&2
+            grep -F -- "$p " "$edges" | while IFS= read -r edge; do
+              echo "  referenced by: ''${edge#* }" >&2
+            done
+            bad=1
+          fi
+        done < "$closure/store-paths"
+        if [ "$bad" != 0 ]; then
+          echo "closure guard: ${name} violates the no-shell/no--dev invariant (see above)" >&2
+          exit 1
+        fi
+        touch "$out"
+      '';
+
   buildImage =
     pkgs:
     {
@@ -158,10 +246,19 @@ rec {
       description,
       spec,
     }:
-    pkgs.dockerTools.buildLayeredImage {
-      inherit name tag;
+    let
       contents = imageContents pkgs spec;
+      guard = closureGuard pkgs {
+        name = "${name}-${tag}";
+        inherit contents;
+        allow = spec.closureAllow or [ ];
+      };
+    in
+    pkgs.dockerTools.buildLayeredImage {
+      inherit name tag contents;
       extraCommands = ''
+        # Interpolating the closure guard (${guard}) makes it an input of this
+        # layer derivation: the image cannot build unless the guard passed.
         mkdir -p app tmp
         chmod 1777 tmp
         # Contents are merged by symlink, leaving the identity files pointing at
@@ -182,9 +279,7 @@ rec {
         WorkingDir = "/app";
         Entrypoint = spec.entrypoint;
         Env =
-          commonEnv
-          ++ lib.optional (spec.fhs or false) "LD_LIBRARY_PATH=/lib:/lib64"
-          ++ (spec.env or [ ]);
+          commonEnv ++ lib.optional (spec.fhs or false) "LD_LIBRARY_PATH=/lib:/lib64" ++ (spec.env or [ ]);
         Labels = {
           "org.opencontainers.image.title" = name;
           "org.opencontainers.image.description" = description;
@@ -200,9 +295,41 @@ rec {
       };
     };
 
+  # One hand-authored CycloneDX component carrying an exact NVD CPE identity.
+  # `product` is the CPE product field (may contain CPE escapes, e.g.
+  # erlang\/otp); `name` is the plain component/purl name when they differ.
+  sbomComponent =
+    {
+      vendor,
+      product,
+      version,
+      name ? product,
+    }:
+    {
+      type = "application";
+      "bom-ref" = "varde-extra-${name}-${version}";
+      inherit name version;
+      cpe = "cpe:2.3:a:${vendor}:${product}:${version}:*:*:*:*:*:*:*";
+      purl = "pkg:generic/${name}@${version}";
+    };
+
   # CycloneDX SBOM (with CPEs) over the runtime closure of everything in the
   # image — system packages (glibc, zlib, …) plus the language runtime. Exposed
   # as an app because sbomnix needs nix-store access (cannot run in a sandbox).
+  #
+  # The generated SBOM is best-effort in two ways this app corrects by
+  # appending hand-authored components:
+  #   1. sbomnix derives every CPE as vendor = product = pname, but NVD files
+  #      CVEs under normalized vendors (gnu:glibc, oracle:mysql,
+  #      python_software_foundation:cpython, f5:nginx, …) — a wrong vendor
+  #      matches nothing, silently. The libc component is appended here from
+  #      spec.libc; runtimes with a non-obvious NVD identity append theirs via
+  #      spec.sbomExtraComponents (find the identity with
+  #      `grype db search pkg <name>`), with the version wired to the same
+  #      package binding that builds the image so a nixpkgs bump moves both.
+  #   2. Pruned runtimes (mysql, rabbitmq/erlang — and the stripped python/node
+  #      copies) sever their store references to the upstream package, so the
+  #      shipped software is not even a named component in its own closure.
   buildSbomApp =
     pkgs:
     { name, spec }:
@@ -211,6 +338,22 @@ rec {
         mkdir -p "$out"
         for p in $contents; do ln -s "$p" "$out/$(basename "$p")"; done
       '';
+      # NVD identities per libc; a null libc (varde-static) contributes none.
+      libcIds = {
+        musl = {
+          vendor = "musl-libc";
+          product = "musl";
+          version = pkgs.musl.version;
+        };
+        glibc = {
+          vendor = "gnu";
+          product = "glibc";
+          version = pkgs.glibc.version;
+        };
+      };
+      libc = spec.libc or null;
+      libcComponents = lib.optionals (libc != null) [ (sbomComponent libcIds.${libc}) ];
+      extraComponents = libcComponents ++ (spec.sbomExtraComponents or [ ]);
       app = pkgs.writeShellApplication {
         name = "${name}-sbom";
         # sbomnix 1.8 parses `nix derivation show` and requires the modern
@@ -225,6 +368,11 @@ rec {
           # Run in a temp dir: sbomnix also drops sbom.spdx.json/sbom.csv in CWD.
           work="$(mktemp -d)"
           ( cd "$work" && ${pkgs.sbomnix}/bin/.sbomnix-wrapped "${closure}" --cdx "$out" )
+          ${lib.optionalString (extraComponents != [ ]) ''
+            # NVD-identity components (see the comment on buildSbomApp).
+            ${pkgs.jq}/bin/jq --argjson extra ${lib.escapeShellArg (builtins.toJSON extraComponents)} \
+              '.components += $extra' "$out" > "$out.tmp" && mv "$out.tmp" "$out"
+          ''}
           echo "Wrote CycloneDX SBOM (system packages + runtime) to $out"
         '';
       };

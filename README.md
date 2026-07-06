@@ -52,8 +52,10 @@ Every runtime/service image is built for both C libraries. **The bare tag is
 musl** (the default); append **`-glibc`** to opt in to glibc:
 
 ```dockerfile
-FROM ghcr.io/mathiasror/varde-python:3.13          # musl (default)
-FROM ghcr.io/mathiasror/varde-python:3.13-glibc    # glibc (opt-in)
+# musl (default)
+FROM ghcr.io/mathiasror/varde-python:3.13
+# glibc (opt-in)
+FROM ghcr.io/mathiasror/varde-python:3.13-glibc
 ```
 
 musl is the default because a smaller libc means less to patch and a smaller
@@ -84,7 +86,12 @@ shell-free.
 | TLS | CA bundle at `/etc/ssl/certs/ca-certificates.crt` (`SSL_CERT_FILE` set) |
 | Timezones | tzdata at `/usr/share/zoneinfo` (`TZDIR` set) |
 | Writable paths | `/app`, `/tmp` (sticky) |
-| Scanning | per-image CycloneDX SBOM for Trivy (see below) |
+| Scanning | per-image CycloneDX SBOM with NVD CPEs, scanned with grype (see below) |
+
+The shell/package-manager guarantee is **enforced at build time**: a closure
+check fails any image build whose runtime closure contains a shell or a `-dev`
+output (postgres's disclosed static `ash` is the sole, explicit exemption), so
+a nixpkgs bump can never silently ship one.
 
 Images that load **externally-compiled** native code (`python`, `node`, and the
 `glibc`/`musl` bases) also ship that libc's loader + `libstdc++`/`libgcc_s` at
@@ -116,7 +123,8 @@ under [`examples/`](examples/) — each takes an `ARG BASE_IMAGE`, so you can
 The shortest possible case (a static binary):
 
 ```dockerfile
-FROM ghcr.io/mathiasror/varde-static:latest   # a.k.a. varde-go
+# a.k.a. varde-go
+FROM ghcr.io/mathiasror/varde-static:latest
 COPY app /app/app
 # Inherits USER 1000:1000, WORKDIR /app, ENTRYPOINT ["/app/app"]
 ```
@@ -137,7 +145,7 @@ nix build .#image-jre-21-musl       # -> ./result  (a Docker-format image tarbal
 nix build .#image-python-3_12-glibc # note: dots -> underscores, libc is part of the attr
 docker load < result
 # or push to your own namespace without a daemon:
-skopeo copy docker-archive:result docker://ghcr.io/<your-user>/varde-jre:21-musl-amd64
+skopeo copy docker-archive:result docker://ghcr.io/YOUR_USER/varde-jre:21-musl-amd64
 ```
 
 List everything that exists: `nix eval --json .#ciMatrix` (each entry carries its
@@ -152,29 +160,38 @@ List everything that exists: `nix eval --json .#ciMatrix` (each entry carries it
 > extra-trusted-public-keys = varde.cachix.org-1:oUZD/OJtc/pTMrpe/p7Ax/2eLhbphON1O5mWRbvWa84=
 > ```
 
-## Vulnerability scanning (Trivy)
+## Vulnerability scanning (grype)
 
-A distroless image has **no OS package database**, so `trivy image` alone reports
-no system packages. We close that gap with Nix's exact closure: for every image,
-[`sbomnix`](https://github.com/tiiuae/sbomnix) emits a **CycloneDX SBOM with CPEs**
-covering the system packages (glibc/musl, zlib, …) and the language runtime.
+A distroless image has **no OS package database**, so an image scanner alone
+reports no system packages. We close that gap with Nix's exact closure: for
+every image, [`sbomnix`](https://github.com/tiiuae/sbomnix) emits a **CycloneDX
+SBOM with CPEs** covering the system packages (glibc/musl, zlib, …) and the
+language runtime, and the SBOM app corrects each component's CPE to the exact
+identity NVD actually files CVEs under (`gnu:glibc`, `oracle:mysql`,
+`python_software_foundation:cpython`, …) — a wrong vendor string matches
+nothing, silently. Scan with [grype](https://github.com/anchore/grype), which
+matches those CPEs against NVD:
 
 ```bash
 # System packages + runtime, via the SBOM:
 nix run .#sbom-jre-21-musl -- sbom.cdx.json
-trivy sbom sbom.cdx.json
+grype sbom:sbom.cdx.json
 
 # Your app's own dependencies, once the app image is built:
-trivy image ghcr.io/mathiasror/your-app:tag
+grype ghcr.io/mathiasror/your-app:tag
 ```
 
-`trivy image` natively reads app dependencies from JARs, `node_modules`,
-Python dist-info, and the build info embedded in **Go and Rust binaries** — so the
-final app image is scannable too. CI runs both scans on every build; findings are
-in the build log and the SBOM is uploaded as a build artifact. Scanning is
-**report-only** for these base images (so they publish with their findings
-visible); enforce hard gates in your *app* image, where you control the
-dependency set.
+`grype <image>` natively reads app dependencies from JARs, `node_modules`,
+Python dist-info, and the build info embedded in **Go binaries** (and Rust
+binaries built with `cargo auditable`) — so the final app image is scannable
+too. CI scans every SBOM with grype on every build, guarded by a known-CVE
+canary fixture: if the scanner ever parses these SBOMs to zero findings, the
+build fails instead of reporting clean. Findings are in the build log and the
+SBOM is uploaded as a build artifact. Scanning is **report-only** for these
+base images (so they publish with their findings visible); enforce hard gates
+in your *app* image, where you control the dependency set. CPE matching of Nix
+store contents against NVD is best-effort — expect occasional false positives
+and misses compared to a distro package database.
 
 > SARIF upload to the GitHub **Security** tab is wired up but non-fatal — scan
 > findings land under **Security → Code scanning** per image/arch. (On a private
@@ -220,8 +237,9 @@ data-driven from the flake:
 1. **setup** — reads `.#ciMatrix`, `.#latestTags`, and `.#imageAliases`, crosses
    every image/variant (including libc) with `amd64` + `arm64`.
 2. **build** — native runners (`ubuntu-latest` / `ubuntu-24.04-arm`): build the
-   image, generate + Trivy-scan the SBOM, scan the image, smoke-test it, push
-   per-arch tags to GHCR (skipped on PRs).
+   image, generate the SBOM, grype-scan it (behind a known-CVE canary),
+   Trivy-scan the image filesystem, smoke-test it, push per-arch tags to GHCR
+   (skipped on PRs).
 3. **manifest** — assembles multi-arch lists per libc tag, the bare-version and
    `:latest` / `:latest-glibc` aliases, and the `varde-go` / `varde-rust` alias
    digests.
@@ -234,8 +252,12 @@ Both `build` and `e2e` push/pull a shared **Cachix** cache so the from-source
 musl variants are compiled once and reused across jobs, later runs, and the e2e
 workflow (the first run is slow; subsequent ones are downloads).
 
-Auth uses the built-in `GITHUB_TOKEN`. A weekly cron rebuilds against the latest
-nixpkgs so published images pick up CVE fixes even when this repo is unchanged.
+Auth uses the built-in `GITHUB_TOKEN`. A weekly job
+([`bump-lock.yml`](.github/workflows/bump-lock.yml)) bumps `flake.lock` to the
+latest nixpkgs, commits the bump to `main` (a GitHub-signed bot commit), and
+dispatches the build from that commit — so published images pick up CVE fixes
+*and* every published image corresponds to a commit of this repo whose lock
+reproduces it.
 
 > **Cache setup, one-time:** create a free open-source cache named `varde` at
 > [cachix.org](https://cachix.org) (keep it **public** so fork PRs and end users
@@ -318,7 +340,7 @@ lib/default.nix                 # scaffolding + mkLibcEnv, mkVariants, buildImag
 images/<name>.nix               # one module per image (+ images/nginx.conf)
 examples/<image>/<variant>/     # buildable "drop your app in" examples
 scripts/e2e.sh                  # build examples on local bases, smoke + size budgets
-.github/workflows/build.yml     # data-driven matrix build -> Trivy -> GHCR
+.github/workflows/build.yml     # data-driven matrix build -> grype -> GHCR
 .github/workflows/e2e.yml       # build + smoke-test the examples
 .github/workflows/pages.yml     # deploy the landing page to GitHub Pages
 site/                           # landing page (static, no build step)
