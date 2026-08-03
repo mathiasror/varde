@@ -3,8 +3,20 @@
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
+  # SBOM/scan tooling pin, separate from the image-contents `nixpkgs` above.
+  # The tooling used to ride the weekly bump, so when the July 13/20 2026 bumps
+  # landed a nixpkgs where sbomnix-1.8.0 no longer built (its dependency
+  # python3.14-df-diskcache-0.0.2 fails to compile), every CI build job went
+  # red for two weeks — a tooling breakage, not an image problem. Pinned to an
+  # exact rev (the July 27 2026 nixos-unstable bump, where sbomnix builds
+  # again) so it moves only when a human edits this line; bump-lock.yml
+  # deliberately updates only `nixpkgs`. A weekly bump can now only break the
+  # image contents actually being rebuilt, never the machinery that packages
+  # them. Follows nothing — nixpkgs has no inputs of its own.
+  inputs.nixpkgs-tools.url = "github:NixOS/nixpkgs/624af665418d3c65d544145b4d34ad696439570e";
+
   outputs =
-    { self, nixpkgs }:
+    { self, nixpkgs, nixpkgs-tools }:
     let
       lib = nixpkgs.lib;
       # Linux-only: Nix can't build a Linux image on Darwin without a Linux builder.
@@ -39,6 +51,9 @@
         system:
         let
           pkgs = import nixpkgs { inherit system; };
+          # SBOM machinery from the pinned input (see `nixpkgs-tools` above) —
+          # image contents keep coming from the moving `pkgs`.
+          toolsPkgs = import nixpkgs-tools { inherit system; };
         in
         lib.concatLists (
           lib.mapAttrsToList (
@@ -54,7 +69,7 @@
                 inherit (m) description;
                 inherit spec;
               };
-              sbomApp = vardeLib.buildSbomApp pkgs {
+              sbomApp = vardeLib.buildSbomApp pkgs toolsPkgs {
                 name = "varde-${image}-${sanitize tag}";
                 inherit spec;
               };
