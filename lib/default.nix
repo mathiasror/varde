@@ -330,8 +330,18 @@ rec {
   #   2. Pruned runtimes (mysql, rabbitmq/erlang — and the stripped python/node
   #      copies) sever their store references to the upstream package, so the
   #      shipped software is not even a named component in its own closure.
+  #
+  # Two package sets, deliberately: `pkgs` (the moving image nixpkgs) supplies
+  # the contents being SBOM'd and the component versions — those MUST track
+  # what is actually shipped. `toolsPkgs` (the flake's pinned `nixpkgs-tools`
+  # input) supplies the machinery: sbomnix, the modern Nix it needs on PATH,
+  # jq, and the writeShellApplication wrapper. Split after the July 2026
+  # weekly bumps, where sbomnix stopped building (its python3.14-df-diskcache
+  # dependency fails to compile) and this one tooling breakage failed every
+  # image's CI job for two weeks — the tooling must not ride the same moving
+  # nixpkgs as the images it packages.
   buildSbomApp =
-    pkgs:
+    pkgs: toolsPkgs:
     { name, spec }:
     let
       closure = pkgs.runCommand "${name}-closure" { contents = imageContents pkgs spec; } ''
@@ -354,23 +364,23 @@ rec {
       libc = spec.libc or null;
       libcComponents = lib.optionals (libc != null) [ (sbomComponent libcIds.${libc}) ];
       extraComponents = libcComponents ++ (spec.sbomExtraComponents or [ ]);
-      app = pkgs.writeShellApplication {
+      app = toolsPkgs.writeShellApplication {
         name = "${name}-sbom";
         # sbomnix 1.8 parses `nix derivation show` and requires the modern
         # `inputs` schema, but the nixpkgs `sbomnix` *wrapper* forces an older
         # bundled Nix (2.31) whose output still uses legacy `inputDrvs` — which
         # sbomnix then rejects. Put a current Nix (new schema) on PATH and call
         # sbomnix's underlying entry point directly, bypassing that wrapper.
-        runtimeInputs = [ pkgs.nixVersions.latest ];
+        runtimeInputs = [ toolsPkgs.nixVersions.latest ];
         text = ''
           out="''${1:-${name}.cdx.json}"
           case "$out" in /*) ;; *) out="$PWD/$out" ;; esac
           # Run in a temp dir: sbomnix also drops sbom.spdx.json/sbom.csv in CWD.
           work="$(mktemp -d)"
-          ( cd "$work" && ${pkgs.sbomnix}/bin/.sbomnix-wrapped "${closure}" --cdx "$out" )
+          ( cd "$work" && ${toolsPkgs.sbomnix}/bin/.sbomnix-wrapped "${closure}" --cdx "$out" )
           ${lib.optionalString (extraComponents != [ ]) ''
             # NVD-identity components (see the comment on buildSbomApp).
-            ${pkgs.jq}/bin/jq --argjson extra ${lib.escapeShellArg (builtins.toJSON extraComponents)} \
+            ${toolsPkgs.jq}/bin/jq --argjson extra ${lib.escapeShellArg (builtins.toJSON extraComponents)} \
               '.components += $extra' "$out" > "$out.tmp" && mv "$out.tmp" "$out"
           ''}
           echo "Wrote CycloneDX SBOM (system packages + runtime) to $out"

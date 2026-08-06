@@ -114,6 +114,16 @@ dependencies are covered natively by `grype <image>` once its image is built.
 CPE-based matching of Nix store contents is best-effort — expect some noise
 relative to a distro package database.
 
+The SBOM tooling (sbomnix, the modern Nix it needs on PATH, jq, the script
+wrapper) comes from a separately pinned nixpkgs — the `nixpkgs-tools` flake
+input, which the weekly bump never touches — while the closure being SBOM'd
+and the component versions keep tracking the moving `nixpkgs`. The split
+exists because the July 2026 weekly bumps landed a nixpkgs where sbomnix no
+longer built (its python3.14-df-diskcache dependency stopped compiling), and
+since every image carries an SBOM app, that single tooling breakage failed
+every CI build job for two weeks. A bump can now only break the image contents
+actually being rebuilt, never the machinery that packages them.
+
 ## CI and tagging
 
 The build matrix is derived from `.#ciMatrix` (image × tag × libc) crossed with
