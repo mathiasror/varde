@@ -37,11 +37,46 @@
       # the registry tag keeps the real "3.12".
       sanitize = lib.replaceStrings [ "." ] [ "_" ];
 
+      # p11-kit 0.26.2's test-server.sh is racy when gnutls's p11tool is absent
+      # (always, in the sandbox): it starts p11-kit-server, skips its only test,
+      # then teardown `kill`s a server PID that has often already exited — and
+      # common/test-init.sh runs under `set -euf`, so the failed kill fails the
+      # whole check phase. Run 30795989594 shows the same drv passing in
+      # jre:21-musl (arm64) and failing jre:25-musl (arm64) two minutes later —
+      # a pure race, upstream-unfixed as of 0.26.2. Tolerating the dead server
+      # keeps the other 66 checks (and the skip) intact. Musl-only on purpose:
+      # glibc builds resolve from cache.nixos.org, and touching their p11-kit
+      # drv would cache-miss every glibc image for no gain; musl builds come
+      # from source into the varde cachix anyway, so only they pay the one-time
+      # rebuild of the p11-kit -> gnutls -> cups -> temurin chain.
+      p11kitTeardownRaceFix = final: prev: {
+        p11-kit =
+          if prev.stdenv.hostPlatform.isMusl then
+            prev.p11-kit.overrideAttrs (old: {
+              postPatch =
+                (old.postPatch or "")
+                + ''
+                  substituteInPlace p11-kit/test-server.sh \
+                    --replace-fail 'kill "$P11_KIT_SERVER_PID"' 'kill "$P11_KIT_SERVER_PID" 2>/dev/null || :'
+                '';
+            })
+          else
+            prev.p11-kit;
+      };
+      # Sole nixpkgs import for image contents: evalFor and entriesFor must
+      # share one instantiation or their store paths could silently diverge.
+      pkgsFor =
+        system:
+        import nixpkgs {
+          inherit system;
+          overlays = [ p11kitTeardownRaceFix ];
+        };
+
       # Evaluate every module once for a system: { <image> = { description; latest?; variants; }; }
       evalFor =
         system:
         let
-          pkgs = import nixpkgs { inherit system; };
+          pkgs = pkgsFor system;
         in
         lib.mapAttrs (image: mod: mod { inherit pkgs vardeLib lib; }) modules;
 
@@ -50,7 +85,7 @@
       entriesFor =
         system:
         let
-          pkgs = import nixpkgs { inherit system; };
+          pkgs = pkgsFor system;
           # SBOM machinery from the pinned input (see `nixpkgs-tools` above) —
           # image contents keep coming from the moving `pkgs`.
           toolsPkgs = import nixpkgs-tools { inherit system; };
