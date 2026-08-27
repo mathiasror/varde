@@ -44,7 +44,14 @@ jobs:
           determinate: false # plain upstream Nix; no FlakeHub login attempt (see build.yml)
 
       - name: Update flake.lock
-        run: nix flake update
+        # Bump ONLY the image-contents input. `nixpkgs-tools` (the SBOM/scan
+        # tooling pin, see flake.nix) must not ride the weekly bump: when the
+        # tooling moved with the images, a nixpkgs where sbomnix no longer
+        # built (July 2026, its df-diskcache dependency stopped compiling)
+        # failed every build job for two weeks. Its rev is pinned in flake.nix,
+        # but keep the update scoped anyway so no future input is bumped here
+        # by accident.
+        run: nix flake update nixpkgs
 
       - name: Sanity-check the new lock evaluates
         # Don't commit a lock that breaks flake evaluation — catch it here

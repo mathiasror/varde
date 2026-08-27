@@ -140,10 +140,17 @@ jobs:
           SCOPED: ${{ steps.scope.outputs.images }}
         run: |
           # Cross each {image,tag,attr,sbomName} with the two native arches.
+          # `heavy` marks the from-source musl builds (jre's OpenJDK bootstrap,
+          # php's extension closure) that overran the build job's 240-minute
+          # ceiling cache-cold — the 2026-07-27 weekly run (30254840058)
+          # cancelled all ten at the cap; the build job grants them extra
+          # headroom. Derived here from the name so ciMatrix in the flake
+          # stays workflow-agnostic.
           matrix=$(nix eval --json .#ciMatrix | jq -c '{include: [
             .[] as $i
             | ({name:"amd64",runner:"ubuntu-latest"}, {name:"arm64",runner:"ubuntu-24.04-arm"}) as $a
-            | $i + {arch:$a.name, runner:$a.runner}
+            | $i + {arch:$a.name, runner:$a.runner,
+                    heavy: (($i.image == "jre" or $i.image == "php") and ($i.tag | endswith("-musl")))}
           ]}')
           # Apply the PR scope, if any. Guard against the filter matching
           # nothing (e.g. a PR that only *deletes* an image module scopes to a
@@ -176,8 +183,11 @@ jobs:
     runs-on: ${{ matrix.runner }}
     # Cached builds finish in minutes; the ceiling exists for cache-cold musl
     # compiles (icu, erlang, postgres) while still cutting off wedged runners
-    # well before the 6h default.
-    timeout-minutes: 240
+    # well before the 6h default. The `heavy` entries (musl jre/php — flagged
+    # in the setup jq above) need more than 240 cache-cold, so they run to
+    # just under the 360-minute hosted-runner hard cap instead; a timeout
+    # costs no cache progress either way (see the cachix-action note below).
+    timeout-minutes: ${{ matrix.heavy && 350 || 240 }}
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.setup.outputs.matrix) }}
@@ -190,6 +200,15 @@ jobs:
       # (node/nginx/redis, and everything on aarch64-musl); every run after that
       # pulls them instead of recompiling. Public cache -> anonymous reads work
       # (fork PRs, end users); pushing needs the CACHIX_AUTH_TOKEN secret.
+      # Timeouts don't cost cache progress: v17 defaults to daemon mode
+      # (useDaemon: true), where a Nix post-build hook hands each store path to
+      # a background daemon that uploads it the moment its derivation finishes
+      # — not in a single post-job push a cancellation could kill. Verified in
+      # run 30254840058: the daemon log shows paths pushed within seconds of
+      # building, and when the job hit its timeout the action's post step still
+      # ran, flushed the queue, and stopped the daemon cleanly. Everything
+      # pushed stays pushed, so the cache warms monotonically and the next
+      # weekly run resumes from it instead of restarting cold.
       - uses: cachix/cachix-action@5f2d7c5294214f71b873db4b969586b980625e71 # v17
         with:
           name: varde
@@ -219,7 +238,12 @@ jobs:
           # 3.0.7) and one purl-matched one (log4j-core 2.14.1); BOTH matching
           # paths must yield findings or the job fails. CPE matching is the
           # path the varde SBOMs rely on.
-          nix run --inputs-from . nixpkgs#grype -- -o json \
+          #
+          # CLI tools here and below (grype/trivy/skopeo/cosign) resolve from
+          # the pinned `nixpkgs-tools` input, not the weekly-bumped `nixpkgs`:
+          # a bump that breaks a tool's build would red-out every job, exactly
+          # like the July 2026 sbomnix breakage (see flake.nix).
+          nix run --inputs-from . nixpkgs-tools#grype -- -o json \
             sbom:.github/canary/canary-sbom.cdx.json > "$RUNNER_TEMP/canary-matches.json"
           for c in openssl log4j-core; do
             n=$(jq --arg c "$c" '[.matches[] | select(.artifact.name == $c)] | length' "$RUNNER_TEMP/canary-matches.json")
@@ -236,7 +260,7 @@ jobs:
           # the *app* image, not here (grype only gates when --fail-on is passed,
           # which it deliberately is not). Unlike trivy there is no display
           # severity filter; the table lists all severities.
-          nix run --inputs-from . nixpkgs#grype -- \
+          nix run --inputs-from . nixpkgs-tools#grype -- \
             -o table -o sarif=grype-sbom.sarif sbom:sbom.cdx.json
           # grype leaves artifactLocation.uri empty for SBOM inputs, and GitHub
           # code scanning drops results without a file path — anchor findings to
@@ -252,7 +276,7 @@ jobs:
           TRIVY_USERNAME: ${{ github.actor }}
           TRIVY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          nix run --inputs-from . nixpkgs#trivy -- image --input result \
+          nix run --inputs-from . nixpkgs-tools#trivy -- image --input result \
             --format sarif --output trivy-image.sarif --severity HIGH,CRITICAL
 
       # SARIF -> Security tab needs code scanning, which private repos only get
@@ -391,7 +415,7 @@ jobs:
           conf="$(mktemp)"; printf 'unqualified-search-registries = []\n' > "$conf"
           export CONTAINERS_REGISTRIES_CONF="$conf"
           dgst="$RUNNER_TEMP/digest.txt"
-          nix run --inputs-from . nixpkgs#skopeo -- --insecure-policy copy \
+          nix run --inputs-from . nixpkgs-tools#skopeo -- --insecure-policy copy \
             --digestfile "$dgst" \
             --dest-creds "${ACTOR}:${TOKEN}" \
             docker-archive:result \
@@ -412,8 +436,8 @@ jobs:
       - name: Sign image + attach SBOM attestation (cosign, keyless)
         if: github.event_name != 'pull_request'
         run: |
-          nix run --inputs-from . nixpkgs#cosign -- sign --yes "$IMAGE_REF"
-          nix run --inputs-from . nixpkgs#cosign -- attest --yes --type cyclonedx --predicate sbom.cdx.json "$IMAGE_REF"
+          nix run --inputs-from . nixpkgs-tools#cosign -- sign --yes "$IMAGE_REF"
+          nix run --inputs-from . nixpkgs-tools#cosign -- attest --yes --type cyclonedx --predicate sbom.cdx.json "$IMAGE_REF"
 
       # SLSA build-provenance attestation (structured: builder, source commit,
       # invocation) on the same per-arch digest, pushed to GHCR as a referrer so
@@ -432,9 +456,10 @@ jobs:
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     steps:
-      # Checkout gives `--inputs-from .` the repo's flake.lock to resolve nixpkgs from.
+      # Checkout gives `--inputs-from .` the repo's flake.lock to resolve the
+      # pinned `nixpkgs-tools` input from.
       - uses: actions/checkout@v5
-      - uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22 (for `nix build --inputs-from . nixpkgs#cosign`)
+      - uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22 (for `nix build --inputs-from . nixpkgs-tools#cosign`)
         with:
           determinate: false # no FlakeHub login attempt (see setup job)
       - name: Log in to GHCR
@@ -444,11 +469,11 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # cosign runs once per unique digest below; build it once from the repo's
-      # pinned nixpkgs instead of paying a `nix run` evaluation per signature.
+      # cosign runs once per unique digest below; build it once from the pinned
+      # tools input instead of paying a `nix run` evaluation per signature.
       - name: Install cosign (pinned via flake.lock)
         run: |
-          nix build --inputs-from . nixpkgs#cosign -o "$RUNNER_TEMP/cosign"
+          nix build --inputs-from . nixpkgs-tools#cosign -o "$RUNNER_TEMP/cosign"
           echo "$RUNNER_TEMP/cosign/bin" >> "$GITHUB_PATH"
 
       - name: Assemble manifest lists (libc tags, bare/latest aliases, image aliases)
