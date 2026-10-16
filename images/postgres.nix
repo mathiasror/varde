@@ -75,7 +75,7 @@
 #   - listen_addresses=*  a container-only address is useless in practice; this
 #     is NOT a trust footgun: initdb's generated pg_hba.conf only allows local
 #     and loopback connections, so remote access still requires the user to
-#     provide an hba rule (e.g. CMD ["-c" "hba_file=/etc/postgresql/pg_hba.conf"]).
+#     provide an hba rule (e.g. CMD ["-c", "hba_file=/etc/postgresql/pg_hba.conf"]).
 # No default CMD: `docker run <img> -c work_mem=64MB` appends straight to the
 # entrypoint, and PGDATA supplies the data directory.
 #
@@ -138,8 +138,8 @@ let
             # `-Wl,--gc-sections` the pg_config path table survives into
             # $lib/lib/*.so, whose $dev reference then trips Nix's
             # "cycle detected ... output 'dev' from output 'lib'" (see header).
-            # (No images/redis.nix-style musl check-skip needed: generic.nix
-            # already disables the musl installcheck itself.)
+            # (No musl check-skip needed: generic.nix already disables the
+            # musl installcheck itself.)
             env = prev.env // {
               CFLAGS = "-fdata-sections -ffunction-sections -fmerge-constants -Wl,--gc-sections";
             };
@@ -180,9 +180,12 @@ let
       # no fhs: the nixpkgs postgres binaries find their libs via RPATH.
 
       # The deliberate /bin/sh (busybox-sandbox-shell; its store name is plain
-      # busybox-<version>) — the sole shell any varde image ships, exempted
-      # from the lib/default.nix closure guard that bans shells everywhere.
-      closureAllow = [ "^busybox-" ];
+      # busybox-<version>, the same name the full multi-applet busybox gets) —
+      # the sole shell any varde image ships, exempted from the lib/default.nix
+      # closure guard that bans shells everywhere. The guard matches allow
+      # patterns against the full store path, so anchor this exact derivation
+      # rather than any busybox-<version> that might wander in.
+      closureAllow = [ "^${lib.escapeRegex "${p.busybox-sandbox-shell}"}$" ];
     };
 in
 {

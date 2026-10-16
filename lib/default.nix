@@ -2,15 +2,19 @@
 #
 # An image module (images/<name>.nix) is a function
 #   { pkgs, vardeLib, lib }: { description; latest?; variants = { "<tag>" = spec; }; }
-# where each `spec` is:
+# `latest` must name a variant: the plain tag for a single-tag module, or the
+# bare version (no libc suffix) for an mkVariants module — flake.nix's
+# latestTags rejects anything else at eval time. Each `spec` is:
 #   { contents ? [], entrypoint, cmd ? null, env ? [], libc, fhs ? false,
 #     stopSignal ? null, sbomExtraComponents ? [ ], closureAllow ? [ ] }
 # `contents` are language-specific store paths merged at image root (e.g. a
 # runtime relocated under /runtime). `libc` ("musl" | "glibc" | null) is set by
-# mkVariants or the base specs below — flake.nix reads it for the CI matrix and
-# mkLibcEnv builds the FHS layout from it when `fhs = true`. `stopSignal` maps
+# mkVariants or the base specs below — flake.nix reads it for the CI matrix (and
+# rejects a variant without it at eval) and mkLibcEnv builds the FHS layout from
+# it when `fhs = true`. `stopSignal` maps
 # to the OCI StopSignal for daemons whose clean-shutdown signal isn't SIGTERM
-# (see images/postgres.nix). Everything else below is added for free.
+# (see images/postgres.nix and images/nginx.nix). Everything else below is
+# added for free.
 { nixpkgs }:
 let
   lib = nixpkgs.lib;
@@ -71,8 +75,10 @@ rec {
           ln -sfn "$so" "$out/lib/$(basename "$so")"
         done
       done
-      # Dynamic loader at the conventional path(s): glibc ld-linux-*.so (both /lib
-      # and /lib64) and musl ld-musl-<arch>.so.1 (/lib). One glob covers both.
+      # Dynamic loader at the conventional paths: every ld-*.so* (glibc's
+      # ld-linux-*.so, musl's ld-musl-<arch>.so.1) is linked into both /lib and
+      # /lib64. Only glibc's PT_INTERP uses /lib64; the musl /lib64 link is
+      # inert but harmless, and one glob covers both libcs.
       for ld in ${libcPkg}/lib/ld-*.so*; do
         [ -e "$ld" ] || continue
         ln -sfn "$ld" "$out/lib/$(basename "$ld")"
@@ -161,30 +167,41 @@ rec {
       (mkCerts pkgs)
       (mkTz pkgs)
     ]
-    ++ lib.optional (spec.fhs or false) (mkLibcEnv pkgs (spec.libc or "glibc"))
+    ++ lib.optional (spec.fhs or false) (mkLibcEnv pkgs spec.libc)
     ++ (spec.contents or [ ]);
 
   # --- contents-closure guard ------------------------------------------------
 
-  # Store-path NAMES no varde image may ship: shells (the distroless promise)
-  # and -dev outputs (build-material leakage). POSIX EREs matched against the
-  # <name> part of /nix/store/<hash>-<name>. -bin outputs are deliberately not
-  # banned: utility CLIs (sqlite-bin, zstd-bin) only ever entered a closure
-  # via a propagating -dev referrer, which the -dev ban already severs — and
-  # legitimate contents could plausibly carry a -bin name.
+  # Store-path NAMES no varde image may ship: shells (the distroless promise),
+  # coreutils, the package managers a runtime could smuggle in (nodejs' `npm`
+  # output, python's pip), and -dev outputs (build-material leakage). POSIX
+  # EREs matched against the <name> part of /nix/store/<hash>-<name>. The
+  # guard is exactly this list — a shell nixpkgs names differently would slip
+  # through, so extend it rather than assume. -bin outputs are deliberately
+  # not banned: utility CLIs (sqlite-bin, zstd-bin) only ever entered a
+  # closure via a propagating -dev referrer, which the -dev ban already severs
+  # — and legitimate contents could plausibly carry a -bin name. pip's store
+  # name is python3.<minor>-pip-<ver>, hence the prefix form (a `-pip$` suffix
+  # would never match it).
   closureDenyPatterns = [
-    "^(bash|dash|busybox|mksh|zsh|toybox)-"
+    "^(bash|dash|busybox|mksh|zsh|toybox|ksh|oksh|loksh|fish|tcsh|yash|nushell|es|rc)-"
+    "^coreutils-"
+    "-npm$"
+    "^python3\\.[0-9]+-pip-"
     "-dev$"
   ];
 
   # Fails the image build if the CONTENTS' runtime closure ships anything
   # matching closureDenyPatterns. Deliberately checks the contents closure via
   # closureInfo, NOT the image derivation's build-time closure — the latter
-  # always contains bash. Per-image exemptions via spec.closureAllow (ERE
-  # list); postgres' deliberate /bin/sh (store name busybox-<version>) is the
-  # sole user. This turns the README's "no shell" from an intention into an
-  # invariant: a nixpkgs bump that grows a shell or a -dev output in any
-  # image's closure turns the build red instead of publishing it.
+  # always contains bash. Per-image exemptions via spec.closureAllow: EREs
+  # matched against the FULL /nix/store/<hash>-<name> path (not just the
+  # name), so an exemption can pin one exact derivation — postgres' deliberate
+  # /bin/sh anchors `${p.busybox-sandbox-shell}` and admits nothing else that
+  # happens to be named busybox-<version>. This turns the README's "no shell"
+  # from an intention into an invariant: a nixpkgs bump that grows a shell,
+  # coreutils, a package-manager output or a -dev output in any image's
+  # closure turns the build red instead of publishing it.
   closureGuard =
     pkgs:
     {
@@ -196,7 +213,7 @@ rec {
       {
         closure = pkgs.closureInfo { rootPaths = contents; };
         denyRegex = lib.concatStringsSep "|" closureDenyPatterns;
-        # "^$" never matches a store-path name; it keeps an empty allow list a
+        # "^$" never matches a store path; it keeps an empty allow list a
         # valid ERE.
         allowRegex = lib.concatStringsSep "|" (allow ++ [ "^$" ]);
       }
@@ -223,7 +240,7 @@ rec {
         while IFS= read -r p; do
           nm="''${p#/nix/store/}"
           nm="''${nm#*-}"
-          if [[ "$nm" =~ $denyRegex ]] && ! [[ "$nm" =~ $allowRegex ]]; then
+          if [[ "$nm" =~ $denyRegex ]] && ! [[ "$p" =~ $allowRegex ]]; then
             echo "closure guard: forbidden store path in image contents closure: $p" >&2
             grep -F -- "$p " "$edges" | while IFS= read -r edge; do
               echo "  referenced by: ''${edge#* }" >&2
@@ -232,7 +249,7 @@ rec {
           fi
         done < "$closure/store-paths"
         if [ "$bad" != 0 ]; then
-          echo "closure guard: ${name} violates the no-shell/no--dev invariant (see above)" >&2
+          echo "closure guard: ${name} ships a path on the closure deny list (shells, coreutils, npm/pip, -dev outputs; see above and closureDenyPatterns in lib/default.nix)" >&2
           exit 1
         fi
         touch "$out"
@@ -349,6 +366,9 @@ rec {
         for p in $contents; do ln -s "$p" "$out/$(basename "$p")"; done
       '';
       # NVD identities per libc; a null libc (varde-static) contributes none.
+      # `libc` is required (flake.nix's entriesFor throws on a spec without
+      # it), so no default here: a fallback could append a libc component the
+      # image does not actually ship.
       libcIds = {
         musl = {
           vendor = "musl-libc";
@@ -361,7 +381,7 @@ rec {
           version = pkgs.glibc.version;
         };
       };
-      libc = spec.libc or null;
+      libc = spec.libc;
       libcComponents = lib.optionals (libc != null) [ (sbomComponent libcIds.${libc}) ];
       extraComponents = libcComponents ++ (spec.sbomExtraComponents or [ ]);
       app = toolsPkgs.writeShellApplication {
@@ -377,11 +397,24 @@ rec {
           case "$out" in /*) ;; *) out="$PWD/$out" ;; esac
           # Run in a temp dir: sbomnix also drops sbom.spdx.json/sbom.csv in CWD.
           work="$(mktemp -d)"
+          trap 'rm -rf "$work"' EXIT
           ( cd "$work" && ${toolsPkgs.sbomnix}/bin/.sbomnix-wrapped "${closure}" --cdx "$out" )
           ${lib.optionalString (extraComponents != [ ]) ''
-            # NVD-identity components (see the comment on buildSbomApp).
+            # NVD-identity components (see the comment on buildSbomApp). Two
+            # separate statements, not an `&&` list: bash exempts every command
+            # but the last of an `&&` list from errexit, so a failing jq would
+            # skip the mv and let the app report success with the raw sbomnix
+            # output — which still passes CI's "components non-empty" check
+            # while lacking exactly the components this step exists to add.
+            # The temp file lives in $work so the EXIT trap cleans it up.
             ${toolsPkgs.jq}/bin/jq --argjson extra ${lib.escapeShellArg (builtins.toJSON extraComponents)} \
-              '.components += $extra' "$out" > "$out.tmp" && mv "$out.tmp" "$out"
+              '.components += $extra' "$out" > "$work/augmented.cdx.json"
+            mv "$work/augmented.cdx.json" "$out"
+            # Post-condition: every appended component (bom-ref varde-extra-*,
+            # see sbomComponent) must be present in the written file.
+            ${toolsPkgs.jq}/bin/jq -e --argjson n ${toString (lib.length extraComponents)} \
+              '(.components | map(select((."bom-ref" // "") | startswith("varde-extra-"))) | length) == $n' \
+              "$out" > /dev/null
           ''}
           echo "Wrote CycloneDX SBOM (system packages + runtime) to $out"
         '';

@@ -63,29 +63,36 @@
           else
             prev.p11-kit;
       };
-      # Sole nixpkgs import for image contents: evalFor and entriesFor must
-      # share one instantiation or their store paths could silently diverge.
-      pkgsFor =
+      # One nixpkgs instantiation per system, shared by every consumer below.
+      # Attribute sets memoize; a plain `pkgsFor = system: import nixpkgs …`
+      # function does not (Nix never caches function application), so every
+      # caller would pay a full nixpkgs import of its own.
+      pkgsBySystem = lib.genAttrs systems (
         system:
         import nixpkgs {
           inherit system;
           overlays = [ p11kitTeardownRaceFix ];
-        };
+        }
+      );
 
-      # Evaluate every module once for a system: { <image> = { description; latest?; variants; }; }
-      evalFor =
+      # Every module evaluated once per system: { <image> = { description; latest?; variants; }; }
+      evaluated = lib.genAttrs systems (
         system:
-        let
-          pkgs = pkgsFor system;
-        in
-        lib.mapAttrs (image: mod: mod { inherit pkgs vardeLib lib; }) modules;
+        lib.mapAttrs (
+          image: mod:
+          mod {
+            pkgs = pkgsBySystem.${system};
+            inherit vardeLib lib;
+          }
+        ) modules
+      );
 
       # One flat list of every {image, tag, attr, sbomName, drv, sbomApp} for a
       # system. String fields are system-independent (used to derive CI matrix).
       entriesFor =
         system:
         let
-          pkgs = pkgsFor system;
+          pkgs = pkgsBySystem.${system};
           # SBOM machinery from the pinned input (see `nixpkgs-tools` above) —
           # image contents keep coming from the moving `pkgs`.
           toolsPkgs = import nixpkgs-tools { inherit system; };
@@ -95,7 +102,16 @@
             image: m:
             lib.mapAttrsToList (tag: spec: {
               inherit image tag;
-              libc = spec.libc or "glibc";
+              # `libc` is a required spec field (see the lib/default.nix header);
+              # imageContents and buildSbomApp read it without a default, so a
+              # module that bypasses mkVariants/the base specs fails here, at
+              # eval (CI's setup job evals .#ciMatrix), rather than shipping a
+              # libc the SBOM does not know about.
+              libc =
+                if spec ? libc then
+                  spec.libc
+                else
+                  throw "image '${image}': variant \"${tag}\" has no `libc` — build it with vardeLib.mkVariants or staticSpec/glibcSpec/muslSpec (see the lib/default.nix header)";
               attr = "image-${image}-${sanitize tag}";
               sbomName = "sbom-${image}-${sanitize tag}";
               drv = vardeLib.buildImage pkgs {
@@ -109,22 +125,42 @@
                 inherit spec;
               };
             }) m.variants
-          ) (evalFor system)
+          ) evaluated.${system}
         );
 
-      # Which tag each image publishes as :latest (module-declared; falls back to
-      # the sole variant for single-variant images like static/glibc/musl). A multi-variant
-      # module MUST declare `latest` — otherwise picking one silently (e.g. the
-      # alphabetically-first, oldest tag) would be a footgun, so error instead.
+      # Which tag each image publishes as :latest. A declared `latest` must name
+      # a real variant: a plain tag for single-tag modules (static/glibc/musl),
+      # or a bare version whose -musl/-glibc variant exists for libc-axis
+      # (mkVariants) modules — build.yml appends the libc suffix itself. A
+      # module without `latest` gets its sole plain tag; anything else errors
+      # at eval (the setup job and bump-lock's sanity step eval .#latestTags),
+      # rather than failing in the manifest job after every leg has built, or
+      # silently re-pointing :latest at stale GHCR tags from an earlier publish.
       latestTags = lib.mapAttrs (
         image: m:
+        let
+          tags = lib.attrNames m.variants;
+          isLibcTag = t: lib.hasSuffix "-musl" t || lib.hasSuffix "-glibc" t;
+          libcAxis = lib.any isLibcTag tags;
+          resolves =
+            v:
+            if libcAxis then
+              !isLibcTag v && (lib.elem "${v}-musl" tags || lib.elem "${v}-glibc" tags)
+            else
+              lib.elem v tags;
+        in
         if m ? latest then
-          m.latest
-        else if lib.length (lib.attrNames m.variants) == 1 then
-          lib.head (lib.attrNames m.variants)
+          (
+            if resolves m.latest then
+              m.latest
+            else
+              throw "image '${image}': latest = \"${m.latest}\" names no variant (have: ${lib.concatStringsSep ", " tags}); fix `latest` in images/${image}.nix"
+          )
+        else if lib.length tags == 1 && !isLibcTag (lib.head tags) then
+          lib.head tags
         else
-          throw "image '${image}' has multiple variants but no `latest`; set `latest = \"<tag>\";` in images/${image}.nix"
-      ) (evalFor "x86_64-linux");
+          throw "image '${image}' needs `latest = \"<tag>\";` in images/${image}.nix (variants: ${lib.concatStringsSep ", " tags})"
+      ) evaluated."x86_64-linux";
     in
     {
       packages = forAllSystems (
