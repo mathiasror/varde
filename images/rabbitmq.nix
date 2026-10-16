@@ -9,21 +9,28 @@
 #
 #   /runtime/bin/varde-rabbitmq-server  (the ENTRYPOINT) forks `epmd -daemon`,
 #     waits for the fork, then execs erlexec (an ELF) with the same VM flags
-#     the upstream script computes. epmd must be pre-started this way because
-#     erlexec's own epmd auto-start runs through system(3) (= /bin/sh, absent
-#     here; the failure is silent/non-fatal in erlexec). With epmd running,
-#     RabbitMQ's rabbit_nodes_common:ensure_epmd/0 sees it via net_adm:names/0
-#     and never spawns anything.
+#     the upstream script computes. epmd must be pre-started here because the
+#     only in-tree way RabbitMQ can start it needs a shell: erlexec auto-starts
+#     epmd only when -name/-sname is on its own argv, which the broker's exec
+#     line never passes (rabbit_prelaunch_dist names the node later), so
+#     RabbitMQ would fall back to rabbit_nodes_common:start_epmd/0, which
+#     spawns `$BINDIR/erl -sname epmd-starter-N ...`; THAT erlexec then runs
+#     system("epmd -daemon"), i.e. /bin/sh, absent here (the failure is
+#     swallowed by port_shutdown_loop). With epmd already listening,
+#     ensure_epmd/0's net_adm:names/0 succeeds and the fallback is never
+#     reached.
 #   /runtime/bin/erl and /runtime/erts-*/bin/erl  replace OTP's `erl` shell
-#     script: set ROOTDIR/BINDIR/EMU/PROGNAME and exec erlexec. This keeps
-#     `escript` (an ELF that execs `<its own dir>/erl`) and RabbitMQ's
-#     epmd-starter fallback (`$BINDIR/erl`) working without a shell.
+#     script: set ROOTDIR/BINDIR/EMU/PROGNAME and exec erlexec. This exists
+#     for `escript` (an ELF that execs `<its own dir>/erl`) and so that the
+#     epmd-starter fallback above can at least exec cleanly — it still cannot
+#     start epmd without a shell.
 #
 # The CLI tools survive distroless-ification because they are Erlang escripts,
 # not scripts: /rabbitmq/escript/rabbitmqctl is one self-contained escript
-# archive (all seven upstream CLI names are byte-identical; the tool dispatches
-# on argv[0], so the other names are symlinks) whose shebang we point at the
-# in-image /runtime/bin/escript ELF. They are on PATH via /runtime/bin, so:
+# archive (upstream ships seven byte-identical CLI names that dispatch on
+# argv[0]; this image links six of them as symlinks and deliberately omits
+# vmware-rabbitmq, the commercial/Tanzu plugins CLI) whose shebang we point at
+# the in-image /runtime/bin/escript ELF. They are on PATH via /runtime/bin, so:
 #
 #   docker exec <ctr> rabbitmq-diagnostics ping
 #   docker exec <ctr> rabbitmqctl status
@@ -53,10 +60,12 @@
 #   - Config file:      COPY rabbitmq.conf /app/rabbitmq.conf  (see examples/)
 #   - Plugins:          COPY enabled_plugins /app/enabled_plugins
 #                       (e.g. `[rabbitmq_management].` -> UI on :15672)
-#   - Data:             /app/mnesia (writable, uid 1000). NOTE: the node name
-#                       defaults to rabbit@<container hostname> and the data
-#                       dir embeds it — for persistent data run with a stable
-#                       `--hostname` (or set RABBITMQ_NODENAME).
+#   - Data:             /app/mnesia (ships in the image, writable, uid 1000,
+#                       so a named volume mounted there inherits the
+#                       ownership: `-v rabbit-data:/app/mnesia`). NOTE: the
+#                       node name defaults to rabbit@<container hostname> and
+#                       the data dir embeds it — for persistent data run with
+#                       a stable `--hostname` (or set RABBITMQ_NODENAME).
 #   - Erlang cookie:    auto-created 0400 at /app/.erlang.cookie (HOME=/app).
 #   - Ports:            5672 AMQP, 15672 management (if enabled), 4369 epmd +
 #                       25672 dist (cluster-internal; don't publish them).
@@ -194,7 +203,13 @@ let
             /* ENTRYPOINT: start epmd, then become the RabbitMQ VM.
              * epmd -daemon double-forks, so the waitpid returns immediately;
              * the daemon is reparented to this process (PID 1), which then
-             * execs into beam. rabbit's ensure_epmd() finds it running. */
+             * execs into beam. rabbit's ensure_epmd() finds it running.
+             * A failed pre-start is reported on stderr, not fatal: an external
+             * epmd on :4369 (shared network namespace) still lets the broker
+             * boot. The status only covers fork/exec and epmd's own argument
+             * parsing — `epmd -daemon` exit(0)s in the parent before the
+             * detached daemon binds, so a bind/port-in-use failure never comes
+             * back here and is diagnosed by RabbitMQ itself (net_kernel). */
             int main(int argc, char **argv) {
                 (void)argc;
                 pid_t pid = fork();
@@ -203,9 +218,15 @@ let
                     execv(VARDE_BINDIR "/epmd", ep);
                     _exit(127);
                 }
-                if (pid > 0) {
-                    int status;
-                    waitpid(pid, &status, 0);
+                int status = 0;
+                if (pid < 0 || waitpid(pid, &status, 0) < 0
+                    || !WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+                    static const char msg[] =
+                        "varde-rabbitmq-server: failed to start epmd -daemon; "
+                        "the broker will fail in rabbit_prelaunch_dist unless "
+                        "an epmd is already listening on :4369\n";
+                    ssize_t n = write(2, msg, sizeof msg - 1);
+                    (void)n;
                 }
                 setenv("ROOTDIR", VARDE_ROOT, 1);
                 setenv("BINDIR", VARDE_BINDIR, 1);
@@ -249,6 +270,7 @@ let
             # One escript archive; upstream's seven CLI names are byte-identical
             # and dispatch on argv[0]. Point the shebang at the in-image escript
             # ELF (also kills the store reference to the build erlang).
+            # vmware-rabbitmq is intentionally not linked (here or in runtime).
             printf '#!/runtime/bin/escript\n' > "$out/rabbitmq/escript/rabbitmqctl"
             tail -n +2 ${rabbitmq}/escript/rabbitmqctl >> "$out/rabbitmq/escript/rabbitmqctl"
             chmod 555 "$out/rabbitmq/escript/rabbitmqctl"
@@ -259,19 +281,31 @@ let
           '';
     in
     {
+      # /app/mnesia ships as a directory (uid 1000 via lib's chown of ./app) so
+      # that `-v rabbit-data:/app/mnesia` works: Docker only copies the
+      # mountpoint's ownership into a fresh named volume when the path already
+      # exists in the image. Without it the volume would be root-owned and the
+      # uid-1000 broker could not create /app/mnesia/rabbit@<host> at boot.
       contents = [
         runtime
         dist
+        (p.runCommand "varde-rabbitmq-dirs" { } ''
+          mkdir -p "$out/app/mnesia"
+        '')
       ];
-      # The exact erl line `sbin/rabbitmq-server` would exec (its defaults for
-      # SERVER_ERL_ARGS and the allocator flags), via the epmd-starting shim.
-      # +B i matches upstream's container behavior (ignore SIGINT/^C; docker
-      # stop's SIGTERM shuts down gracefully via rabbit's signal handler).
+      # The exact erl line `sbin/rabbitmq-server` execs in its exec branch —
+      # the one the official container takes (RUNNING_UNDER_SYSTEMD=true) —
+      # with its defaults for SERVER_ERL_ARGS and the allocator flags, via the
+      # epmd-starting shim. Deliberately NO `+B i`: upstream only adds that in
+      # the non-exec wrapper branch, where the wrapper shell stays alive and
+      # its INT trap turns ^C into `rabbitmqctl stop`; with no wrapper it would
+      # just make beam ignore SIGINT and a foreground `docker run` impossible
+      # to ^C. So, as in the official image, ^C ends the VM at once and
+      # `docker stop` (SIGTERM) is the graceful path via rabbit's signal
+      # handler.
       entrypoint = [
         "/runtime/bin/varde-rabbitmq-server"
         "-noinput"
-        "+B"
-        "i"
         "-s"
         "rabbit"
         "boot"
@@ -340,14 +374,17 @@ let
       # SBOM: runtime (disallowedRequisites erlang, above) and dist
       # (allowedReferences ["out"]) deliberately sever their references to the
       # source packages, so neither the broker nor OTP would be named
-      # components in their own SBOM. NVD identities: recent RabbitMQ CVEs are
-      # keyed under vendor `vmware` (dual-keyed with pivotal_software using
-      # identical version constraints); OTP's sparse NVD coverage sits under
-      # `erlang:erlang\/otp`. Scan metadata only; never enters image contents.
+      # components in their own SBOM. NVD identities: RabbitMQ CVEs are filed
+      # under `broadcom:rabbitmq_server` (every 3.9+ advisory, including the
+      # 2026 ones); the older `vmware:rabbitmq` / `pivotal_software:rabbitmq`
+      # CPEs only carry pre-3.9 CVEs and match nothing for the shipped
+      # version. OTP's sparse NVD coverage sits under `erlang:erlang\/otp`.
+      # Scan metadata only; never enters image contents.
       sbomExtraComponents = [
         (vardeLib.sbomComponent {
-          vendor = "vmware";
-          product = "rabbitmq";
+          vendor = "broadcom";
+          product = "rabbitmq_server";
+          name = "rabbitmq";
           version = rabbitmq.version;
         })
         (vardeLib.sbomComponent {
