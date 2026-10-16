@@ -5,6 +5,32 @@
 # php-fpm at /runtime/bin/php-fpm — override the entrypoint to serve FastCGI
 # behind a web server (e.g. varde-nginx):
 #   ENTRYPOINT ["/runtime/bin/php-fpm", "-F", "-y", "/app/php-fpm.conf"]
+#   STOPSIGNAL SIGQUIT
+# STOPSIGNAL matters: php-fpm treats SIGTERM/SIGINT (what `docker stop` and a
+# Kubernetes pod termination send by default) as immediate termination —
+# workers are SIGTERMed and in-flight requests abort — while SIGQUIT is the
+# graceful stop that lets workers finish their current request. Same reason
+# images/nginx.nix sets stopSignal = "SIGQUIT" and the official php:*-fpm
+# images set STOPSIGNAL SIGQUIT; the image itself leaves StopSignal unset
+# because the default entrypoint is the CLI. SIGQUIT alone is NOT enough:
+# process_control_timeout defaults to 0, so the master escalates to SIGTERM on
+# the next event-loop tick and kills workers mid-request anyway — set it (see
+# the conf below) and keep it below the container's stop grace period (docker
+# stop: 10s, Kubernetes terminationGracePeriodSeconds: 30s), otherwise the
+# outer SIGKILL lands first.
+# The conf MUST set error_log: php-fpm's compiled-in default is
+# <prefix>/var/log/php-fpm.log inside the read-only, root-owned store path,
+# which uid 1000 cannot open, so fpm aborts at startup ("failed to open
+# error_log" -> "FPM initialization failed") — and there is no shell to debug
+# it. `-p <prefix>` only helps if that prefix has a writable log/ dir. No
+# user/group lines: the image already runs as 1000:1000. Minimum conf:
+#   [global]
+#   error_log = /proc/self/fd/2
+#   process_control_timeout = 5s
+#   [www]
+#   listen = 9000
+#   pm = static
+#   pm.max_children = 4
 #
 # Extensions: nixpkgs' DEFAULT extension set for each version (bcmath curl dom
 # fileinfo filter gd iconv intl mbstring opcache openssl pdo_mysql pdo_pgsql
