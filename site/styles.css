@@ -63,6 +63,7 @@ body {
 img, svg { display: block; max-width: 100%; }
 a { color: inherit; text-decoration: none; }
 ul, ol { list-style: none; padding: 0; }
+sup { line-height: 0; } /* don't let footnote marks (e.g. "17*") grow their line box */
 button { font: inherit; color: inherit; cursor: pointer; }
 
 ::selection { background: rgba(122,169,255,0.32); color: #fff; }
@@ -130,6 +131,7 @@ button { font: inherit; color: inherit; cursor: pointer; }
   line-height: 1.04;
   letter-spacing: -0.025em;
   font-weight: 680;
+  text-wrap: balance;
 }
 .section__sub {
   margin-top: 1.1rem;
@@ -260,6 +262,7 @@ button { font: inherit; color: inherit; cursor: pointer; }
   color: transparent;
   animation: shimmer 14s ease-in-out infinite;
   max-width: 16ch;
+  text-wrap: balance; /* avoid a lone "surface" line when 16ch splits line one */
 }
 .hero__lead {
   margin-top: 1.6rem;
@@ -373,7 +376,9 @@ button { font: inherit; color: inherit; cursor: pointer; }
   color: var(--text);
   -webkit-text-size-adjust: 100%;
 }
-.code .ln { display: block; white-space: pre; }
+/* Inline, not block: the markup already has a newline after each .ln, so
+   block lines would render every line double-spaced. */
+.code .ln { white-space: pre; }
 .tk-key  { color: #7af0db; font-weight: 600; }
 .tk-img  { color: #c2a8ff; }
 .tk-path { color: #8fb6ff; }
@@ -592,14 +597,15 @@ button { font: inherit; color: inherit; cursor: pointer; }
   background: var(--glass-2);
   border-color: var(--hair-strong);
 }
-.tab.is-active::after {
+/* every tab reserves the underline's space so labels stay on one baseline */
+.tab::after {
   content: "";
   display: block;
   height: 2px;
   margin-top: .45rem;
   border-radius: 2px;
-  background: var(--grad);
 }
+.tab.is-active::after { background: var(--grad); }
 .usage__panels { padding: .9rem; }
 .usage__panels .code-card { box-shadow: none; background: var(--ink-2); }
 .usage__panels .code-card[hidden] { display: none; }
@@ -628,14 +634,16 @@ button { font: inherit; color: inherit; cursor: pointer; }
 @media (min-width: 880px) {
   .nix-band__inner { grid-template-columns: 1.05fr 1.2fr; }
 }
+/* Stacked by default; a single row only where all three steps fit side by
+   side (the one-column band, 720-879px). Wrapping left a dangling arrow at
+   the end of row one with the third step alone below. */
 .flow {
   display: flex;
-  flex-wrap: wrap;
+  flex-direction: column;
   align-items: stretch;
   gap: .75rem;
 }
 .flow__step {
-  flex: 1 1 180px;
   padding: 1.2rem 1.1rem;
   border-radius: var(--radius-sm);
   border: 1px solid var(--hair);
@@ -662,9 +670,11 @@ button { font: inherit; color: inherit; cursor: pointer; }
   flex: 0 0 auto;
 }
 .flow__arrow svg { width: 22px; height: 22px; }
-@media (max-width: 620px) {
-  .flow { flex-direction: column; }
-  .flow__arrow { transform: rotate(90deg); }
+.flow__arrow { transform: rotate(90deg); }
+@media (min-width: 720px) and (max-width: 879px) {
+  .flow { flex-direction: row; }
+  .flow__step { flex: 1 1 0; min-width: 0; }
+  .flow__arrow { transform: none; }
 }
 
 /* =========================================================================
@@ -724,11 +734,19 @@ button { font: inherit; color: inherit; cursor: pointer; }
   background: linear-gradient(180deg, rgba(122,169,255,0.08), rgba(199,125,255,0.045));
   box-shadow: var(--shadow);
 }
+/* aurora top edge: a 3px ring slice masked out of a full-size overlay so it
+   follows the rounded corners (a flat 3px bar can't carry an 18px radius) */
 .compare__col--ours::before {
   content: "";
-  position: absolute; inset: -1px -1px auto -1px; height: 3px;
-  border-radius: var(--radius) var(--radius) 0 0;
+  position: absolute; inset: -1px;
+  padding-top: 3px;
+  border-radius: inherit;
   background: var(--grad);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  mask-composite: exclude;
+  pointer-events: none;
 }
 .compare__col--theirs { opacity: .9; }
 

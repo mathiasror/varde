@@ -7,7 +7,10 @@
   <meta name="robots" content="noindex" />
   <meta name="theme-color" content="#070A10" />
   <meta name="color-scheme" content="dark" />
-  <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
+  <!-- Site-absolute, not "./favicon.svg": GitHub Pages serves this file for
+       any missing path under /varde/, so a relative href would resolve
+       against the missing URL's directory and 404 too. -->
+  <link rel="icon" href="/varde/favicon.svg" type="image/svg+xml" />
   <!-- Self-contained: no external CSS, so this renders correctly no matter
        what path depth the missing URL was requested at. -->
   <style>
@@ -27,7 +30,8 @@
     .mark { width: 68px; height: 68px; margin: 0 auto 1.75rem; display: block; }
     .code {
       font-size: clamp(3.5rem, 12vw, 6rem); font-weight: 800; line-height: 1;
-      letter-spacing: -0.02em; margin: 0;
+      letter-spacing: -0.02em; margin: 0 auto;
+      width: fit-content; /* size the gradient to the glyphs, not the column */
       background: linear-gradient(102deg, #3DE7C7, #4D87FF 40%, #9A7CFF 72%, #C77DFF);
       -webkit-background-clip: text; background-clip: text; color: transparent;
     }

@@ -7,7 +7,7 @@
   <script>document.documentElement.classList.remove('no-js');document.documentElement.classList.add('js');</script>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>varde — The smallest attack surface you can ship</title>
-  <meta name="description" content="Distroless, non-root container base images for Java, Python, Node, Go, and Rust — no shell, no package manager, no root. Free and open source." />
+  <meta name="description" content="Distroless, non-root container base images for Java, Python, Node, PHP, Go and Rust — plus nginx, Redis, PostgreSQL, MySQL, RabbitMQ and Memcached. No shell, no package manager, no root. Free and open source." />
   <meta name="theme-color" content="#070A10" />
   <meta name="color-scheme" content="dark" />
   <link rel="canonical" href="https://rorvik.xyz/varde/" />
@@ -16,18 +16,18 @@
   <meta property="og:type" content="website" />
   <meta property="og:site_name" content="varde" />
   <meta property="og:title" content="varde — The smallest attack surface you can ship" />
-  <meta property="og:description" content="Free, open-source, distroless, non-root base images for Java, Python, Node, Go, and Rust — built with Nix. No paywall, no token: just docker pull." />
+  <meta property="og:description" content="Free, open-source, distroless, non-root base images for Java, Python, Node, PHP, Go and Rust — plus nginx, Redis, PostgreSQL, MySQL, RabbitMQ and Memcached — built with Nix. No paywall, no token: just docker pull." />
   <meta property="og:url" content="https://rorvik.xyz/varde/" />
   <meta property="og:image" content="https://rorvik.xyz/varde/og-image.png" />
   <meta property="og:image:type" content="image/png" />
   <meta property="og:image:width" content="1200" />
   <meta property="og:image:height" content="630" />
-  <meta property="og:image:alt" content="varde — the smallest attack surface you can ship. Minimal, distroless, non-root base images for Java, Python, Node, Go and Rust, built with Nix." />
+  <meta property="og:image:alt" content="varde — the smallest attack surface you can ship. Minimal, distroless, non-root base images for Java, Python, Node, PHP, Go and Rust, plus nginx, Redis, PostgreSQL, MySQL, RabbitMQ and Memcached, built with Nix." />
 
   <!-- Twitter -->
   <meta name="twitter:card" content="summary_large_image" />
   <meta name="twitter:title" content="varde — The smallest attack surface you can ship" />
-  <meta name="twitter:description" content="Free, open-source, distroless, non-root base images for Java, Python, Node, Go, and Rust — built with Nix. No paywall, no token: just docker pull." />
+  <meta name="twitter:description" content="Free, open-source, distroless, non-root base images for Java, Python, Node, PHP, Go and Rust — plus nginx, Redis, PostgreSQL, MySQL, RabbitMQ and Memcached — built with Nix. No paywall, no token: just docker pull." />
   <meta name="twitter:image" content="https://rorvik.xyz/varde/og-image.png" />
   <meta name="twitter:image:alt" content="varde — the smallest attack surface you can ship." />
 
@@ -39,7 +39,10 @@
   <a class="skip-link" href="#main">Skip to content</a>
 
   <!-- ============ HEADER ============ -->
-  <header class="site-header" id="top">
+  <!-- No id="top" here: the header is sticky, so an in-view anchor target
+       would make href="#top" a no-op. Without a matching id, "#top" scrolls
+       to the top of the document per the HTML spec. -->
+  <header class="site-header">
     <div class="container header__inner">
       <a class="brand" href="#top" aria-label="varde — home">
         <svg class="brand__mark" viewBox="0 0 32 32" aria-hidden="true" focusable="false">
@@ -91,9 +94,10 @@
         <h1 class="hero__title reveal">The smallest attack surface<br />you can ship.</h1>
 
         <p class="hero__lead reveal">
-          Distroless, non-root base images for Java, Python, Node, Go, and Rust — plus nginx and
-          Redis. musl by default for a smaller libc; glibc one tag away. No shell, no package
-          manager, no root — almost nothing for an attacker to land on, and far less to patch.
+          Distroless, non-root base images for Java, Python, Node, PHP, Go and Rust — plus nginx,
+          Redis, PostgreSQL, MySQL, RabbitMQ and Memcached. musl by default for a smaller libc;
+          glibc one tag away. No shell, no package manager, no root — almost nothing for an
+          attacker to land on, and far less to patch.
         </p>
 
         <div class="hero__cta reveal">
@@ -233,7 +237,7 @@
               <h3 class="card__name">varde-redis</h3>
               <ul class="pills"><li>latest</li></ul>
             </div>
-            <p class="card__desc">The Redis server, distroless and non-root. Run as-is or drop in a <code class="inline">redis.conf</code>.</p>
+            <p class="card__desc">The Redis server, distroless and non-root. Run as-is for loopback / <code class="inline">docker exec</code> clients (protected mode), or drop in a <code class="inline">redis.conf</code> / <code class="inline">CMD ["--requirepass", "…"]</code> to serve remote clients.</p>
             <div class="ref">
               <code id="img-redis" class="ref__code"><span class="tk-key">FROM</span> ghcr.io/mathiasror/varde-redis:latest</code>
               <button class="btn-copy btn-copy--sm" type="button" data-target="img-redis" aria-label="Copy varde-redis reference">
@@ -361,7 +365,7 @@
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2 4 5v6c0 5 3.5 8 8 9 4.5-1 8-4 8-9V5Z"/><path d="m9 12 2 2 4-4"/></svg>
             </span>
             <h3 class="feature__title">Non-root by default</h3>
-            <p class="feature__body">Every container runs as uid/gid <strong>1000:1000</strong> in a <code class="inline">/app</code> it owns. No root user is even present.</p>
+            <p class="feature__body">Every container runs as uid/gid <strong>1000:1000</strong> in a <code class="inline">/app</code> it owns. Nothing runs as root unless you explicitly override the user.</p>
           </li>
 
           <li class="feature reveal">
@@ -436,7 +440,8 @@
 <span class="ln"><span class="tk-key">RUN</span> gradle bootJar --no-daemon</span>
 <span class="ln"></span>
 <span class="ln"><span class="tk-key">FROM</span> <span class="tk-img">ghcr.io/mathiasror/varde-jre:21</span></span>
-<span class="ln tk-c"># base ENTRYPOINT is java -jar /app/app.jar — just place the jar</span>
+<span class="ln tk-c"># base ENTRYPOINT is /runtime/bin/java, CMD ["-jar", "/app/app.jar"] — just place the jar</span>
+<span class="ln tk-c"># (override CMD to add JVM flags; they must come before -jar)</span>
 <span class="ln"><span class="tk-key">COPY</span> --from=build /home/gradle/src/build/libs/app.jar <span class="tk-path">/app/app.jar</span></span></code></pre>
             </div>
 
@@ -548,6 +553,7 @@
                 </button>
               </div>
 <pre class="code"><code id="use-redis"><span class="ln"><span class="tk-key">FROM</span> <span class="tk-img">ghcr.io/mathiasror/varde-redis:latest</span></span>
+<span class="ln tk-c"># for -p 6379:6379 the conf must set requirepass (or protected-mode no on trusted networks)</span>
 <span class="ln"><span class="tk-key">COPY</span> redis.conf <span class="tk-path">/app/redis.conf</span></span>
 <span class="ln"><span class="tk-key">CMD</span> [<span class="tk-path">"/app/redis.conf"</span>]</span></code></pre>
             </div>
