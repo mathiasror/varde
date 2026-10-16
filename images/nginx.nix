@@ -52,14 +52,29 @@ let
         "daemon off;"
       ];
       env = [ "PATH=/runtime/bin" ];
+      # `docker stop`'s default SIGTERM is nginx "fast shutdown": workers exit
+      # at once and in-flight responses are cut mid-transfer. SIGQUIT is the
+      # graceful one — stop accepting, finish open requests, then exit (the
+      # official nginx image sets STOPSIGNAL SIGQUIT for the same reason).
+      stopSignal = "SIGQUIT";
 
-      # SBOM: NVD files current nginx CVEs under vendor `f5` (nginx:nginx
-      # stopped being used for new entries after the F5 acquisition), so the
-      # vendor=name CPE sbomnix derives misses them. Scan metadata only.
+      # SBOM: NVD files open-source nginx CVEs under vendor `f5` (nginx:nginx
+      # stopped being used for new entries after the F5 acquisition), and
+      # under BOTH products `nginx` and `nginx_open_source` — e.g.
+      # CVE-2025-23419 is only on f5:nginx while CVE-2024-7347 is only on
+      # f5:nginx_open_source — so one CPE misses whichever product the other
+      # entries use, silently. The vendor=name CPE sbomnix derives matches
+      # neither. Scan metadata only; the distinct `name` keeps the bom-refs
+      # unique.
       sbomExtraComponents = [
         (vardeLib.sbomComponent {
           vendor = "f5";
           product = "nginx";
+          version = p.nginx.version;
+        })
+        (vardeLib.sbomComponent {
+          vendor = "f5";
+          product = "nginx_open_source";
           version = p.nginx.version;
         })
       ];
