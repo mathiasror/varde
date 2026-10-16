@@ -29,8 +29,12 @@ library, images default to musl (smaller, fewer CVEs) with glibc opt-in.
 
 The no-shell/no-package-manager row is enforced, not just intended: a
 build-time closure check (`lib/default.nix`) fails any image whose contents
-closure contains a shell or a `-dev` output, with postgres's static `ash` as
-the sole declared exemption (`closureAllow`).
+closure contains a store path named like a listed shell (bash, dash, busybox,
+mksh, zsh, toybox, ksh, fish, tcsh, yash, nushell, …), coreutils, a runtime's
+package-manager output (nodejs' `npm`, python's pip), or a `-dev` output, with
+postgres's static `ash` as the sole declared exemption (`closureAllow`, matched
+against the full store path so it admits that one derivation only). It is a
+deny-list — exactly as strong as the list — not a proof of absence.
 
 Because there is no shell, the entrypoint runs the application directly. That
 means a self-contained artifact: a fat JAR, a static or dynamically-linked
@@ -70,7 +74,13 @@ The build is data-driven so that images are described, not wired up by hand.
 - `images/<name>.nix` — one module per image. A runtime/service module returns
   `{ description; latest?; variants = vardeLib.mkVariants pkgs { versions = …; }; }`
   where each version's `spec` is `libcPkgs: { contents ? [], entrypoint, cmd ? null,
-  env ? [], libc, fhs ? false }`. A compiled-binary base is
+  env ? [], fhs ? false, stopSignal ? null, sbomExtraComponents ? [ ],
+  closureAllow ? [ ] }` — `libc` is set by `mkVariants` (or the base specs),
+  not by the module; `sbomExtraComponents` carries the runtime's NVD CPE
+  identity (see below), `stopSignal` a daemon's non-SIGTERM graceful-shutdown
+  signal (postgres, nginx), `closureAllow` a closure-guard exemption. `latest`
+  must name a variant (the bare version for an `mkVariants` module); the flake
+  rejects anything else at eval time. A compiled-binary base is
   `variants."latest" = vardeLib.staticSpec;` (or `glibcSpec`/`muslSpec`).
 - `flake.nix` — `builtins.readDir ./images` discovers the modules and exposes
   `image-<name>-<tag>` packages, `sbom-<name>-<tag>` apps, the CI-driving
@@ -86,8 +96,8 @@ applications load externally-compiled native code.
 
 ## FHS libc layout
 
-`mkLibcEnv pkgs libc` symlinks the dynamic loader (glibc's `ld-linux-*.so` in
-`/lib` and `/lib64`, or musl's `ld-musl-<arch>.so.1` in `/lib`) plus that libc
+`mkLibcEnv pkgs libc` symlinks the dynamic loader (glibc's `ld-linux-*.so` or
+musl's `ld-musl-<arch>.so.1`, into both `/lib` and `/lib64`) plus that libc
 and `libstdc++`/`libgcc_s` into `/lib`; the framework then sets
 `LD_LIBRARY_PATH=/lib:/lib64` for FHS images. The targets are the same package
 set used for the image's runtime, so there is no version mismatch. It is opted
@@ -103,7 +113,8 @@ no system packages. Nix knows the exact closure, so `sbomnix` emits a CycloneDX
 SBOM (with CPEs) covering the system packages (glibc or musl, zlib, …) and the
 runtime. Where NVD files a component under a different vendor than sbomnix's
 vendor=name guess (gnu:glibc, oracle:mysql, python_software_foundation:cpython,
-f5:nginx, …) — or where a pruned runtime severed the store reference that would
+f5:nginx *and* f5:nginx_open_source — NVD splits open-source nginx CVEs across
+both products, …) — or where a pruned runtime severed the store reference that would
 have named it at all (mysql, rabbitmq/erlang) — the SBOM app appends a
 hand-authored component with the exact NVD CPE, versioned from the same package
 binding that builds the image. The SBOM is generated as build metadata, kept
@@ -132,24 +143,34 @@ generated and scanned, then smoke-tested before publishing: interpreter images
 run a one-liner; the compiled-binary bases run a binary compiled with the
 runner's toolchain through `/app/app` (static via `cc -static`, glibc via `cc`,
 musl via `musl-gcc`), exercising each libc's loader; the service images are
-probed over the network (nginx on `:8080`, `redis-cli ping`). After publishing,
-each per-arch image is keyless-signed with cosign (Sigstore, GitHub OIDC — no
-long-lived keys) and gets a CycloneDX SBOM attestation (its own arch's closure
-SBOM, attached to the image) plus a SLSA build-provenance attestation; the
-multi-arch indexes are signed too. These land in the public Rekor log;
-verification commands are in the README.
+probed over the network (nginx on `:8080`, `redis-cli ping`). Each per-arch
+image is then pushed by digest (untagged), keyless-signed with cosign
+(Sigstore, GitHub OIDC — no long-lived keys), given a CycloneDX SBOM
+attestation (its own arch's closure SBOM, attached to the image) plus a SLSA
+build-provenance attestation, verified — and only then is the per-arch tag
+moved onto that digest, so a tag never points at an unsigned image. The
+multi-arch indexes are stitched from those verified digests per image:tag pair
+(a failed leg holds back only its own lists, and the run goes red naming them)
+and signed too. Publishing is main-only — the signing identity is always
+`build.yml@refs/heads/main`. These land in the public Rekor log; verification
+commands are in the README.
 
 Registry tags: `:<tag>-<libc>` (a multi-arch manifest list) and
 `:<tag>-<libc>-<arch>` per-arch; a bare `:<tag>` and `:latest` aliasing the
 default libc (musl if built, else glibc); `:latest-glibc`; and the `varde-go` /
-`varde-rust` alias images mirroring `varde-static` / `varde-glibc`. A weekly
-job commits a `flake.lock` bump to `main` and builds from that commit, so CVE
-fixes flow through and every published image corresponds to a commit whose
-lock reproduces it.
+`varde-rust` alias images mirroring `varde-static` / `varde-glibc`. Each list
+is first pushed under a fixed `<tag>-staging` name (signed and verified there,
+then the real tag is moved onto that digest — see build.yml); those `-staging`
+tags are a CI implementation detail, overwritten every run, and are not a
+supported way to consume an image. A weekly job commits a `flake.lock` bump to
+`main` and builds from that commit, so CVE fixes flow through and every
+published image corresponds to a commit whose lock reproduces it.
 
 A separate `e2e.yml` workflow builds every example in `examples/<image>/<variant>/`
 on top of a locally-built base, smoke-tests that the app runs, and asserts a
-per-image size budget (`scripts/e2e.sh`). musl service/runtime variants that are
+per-image size budget (`scripts/e2e.sh`) — on PRs, and on `main` after every
+successful `build-image` run (the weekly bump included), so the examples are
+checked against the lock the published bases came from. musl service/runtime variants that are
 not in the public Nix cache come from the shared `varde` Cachix cache that
 `build.yml` populates (compiled from source only on a cache-cold first run);
 Actions minutes are free on public repos.

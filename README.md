@@ -26,7 +26,7 @@ unprivileged user. Where there's a choice of C library, images default to
 | Image | Tags | Runs | Drop-in contract |
 | --- | --- | --- | --- |
 | `varde-nginx` | `latest` | static sites (non-root, listens on `:8080`) | `COPY site/ /app/` |
-| `varde-redis` | `latest` | Redis server | run as-is, or pass a `redis.conf` via `CMD` |
+| `varde-redis` | `latest` | Redis server | run as-is (loopback / `docker exec` clients only — Redis protected mode denies remote clients until a password or config is set), or pass a `redis.conf` via `CMD`; for `-p 6379:6379` use e.g. `CMD ["--requirepass", "<secret>"]` |
 | `varde-postgres` | `16` `17` `18` `latest`(=18) | PostgreSQL server | one-time `initdb` via `--entrypoint` against a volume at `/app`, then run |
 | `varde-mysql` | `8.4`* `latest`(=8.4) | MySQL 8.4 LTS server | one-time `--initialize-insecure` run, then run as-is |
 | `varde-rabbitmq` | `latest` | RabbitMQ broker (shell-free Erlang boot) | run as-is; `rabbitmq.conf` + `enabled_plugins` via `COPY` to `/app` |
@@ -42,6 +42,9 @@ unprivileged user. Where there's a choice of C library, images default to
 
 `varde-go` and `varde-rust` are published as **aliases** for discoverability:
 `varde-go` → `varde-static`, `varde-rust` → `varde-glibc` (the same digests).
+Each alias carries copies of its source's per-arch signature, SBOM and
+provenance attestations (the same Rekor entries), so the verification recipe
+below works against the alias name too.
 
 Each is published to **GHCR** under `ghcr.io/mathiasror/<image>`, multi-arch
 (`amd64` + `arm64`).
@@ -88,10 +91,15 @@ shell-free.
 | Writable paths | `/app`, `/tmp` (sticky) |
 | Scanning | per-image CycloneDX SBOM with NVD CPEs, scanned with grype (see below) |
 
-The shell/package-manager guarantee is **enforced at build time**: a closure
-check fails any image build whose runtime closure contains a shell or a `-dev`
-output (postgres's disclosed static `ash` is the sole, explicit exemption), so
-a nixpkgs bump can never silently ship one.
+The shell/package-manager guarantee is **enforced at build time** by a
+deny-list closure check ([`lib/default.nix`](lib/default.nix)): any image
+build fails whose runtime closure contains a store path named like a known
+shell (`bash`, `dash`, `busybox`, `mksh`, `zsh`, `toybox`, `ksh`, `fish`,
+`tcsh`, `yash`, `nushell`, …), `coreutils`, a runtime's package-manager output
+(`npm`, `pip`), or a `-dev` output. Postgres's disclosed static `ash` is the
+sole, explicit exemption, pinned to that exact derivation. The guard is only
+as strong as its list — a shell nixpkgs names differently would pass — but a
+nixpkgs bump can never silently ship anything on it.
 
 Images that load **externally-compiled** native code (`python`, `node`, and the
 `glibc`/`musl` bases) also ship that libc's loader + `libstdc++`/`libgcc_s` at
@@ -112,7 +120,7 @@ under [`examples/`](examples/) — each takes an `ARG BASE_IMAGE`, so you can
 - **Node** — [`simple`](examples/node/simple/), [`express`](examples/node/express/) (production-shaped)
 - **Go** — [`examples/go/simple/`](examples/go/simple/) (static, on `varde-static`)
 - **Rust** — [`examples/rust/simple/`](examples/rust/simple/) (glibc, on `varde-glibc`)
-- **PHP** — [`examples/php/simple/`](examples/php/simple/) (`php-fpm` behind nginx, or cli)
+- **PHP** — [`examples/php/simple/`](examples/php/simple/) (cli; the image also ships `php-fpm` — see the example README)
 - **nginx** — [`examples/nginx/static-site/`](examples/nginx/static-site/)
 - **redis** — [`examples/redis/simple/`](examples/redis/simple/)
 - **postgres** — [`examples/postgres/simple/`](examples/postgres/simple/) (explicit `initdb`, volume at `/app`)
@@ -166,11 +174,14 @@ A distroless image has **no OS package database**, so an image scanner alone
 reports no system packages. We close that gap with Nix's exact closure: for
 every image, [`sbomnix`](https://github.com/tiiuae/sbomnix) emits a **CycloneDX
 SBOM with CPEs** covering the system packages (glibc/musl, zlib, …) and the
-language runtime, and the SBOM app corrects each component's CPE to the exact
-identity NVD actually files CVEs under (`gnu:glibc`, `oracle:mysql`,
-`python_software_foundation:cpython`, …) — a wrong vendor string matches
-nothing, silently. Scan with [grype](https://github.com/anchore/grype), which
-matches those CPEs against NVD:
+language runtime. sbomnix guesses `vendor = product = pname`, and a wrong
+vendor string matches nothing, silently — so the SBOM app *appends* a
+hand-authored component per image carrying the exact identity NVD actually
+files CVEs under (`gnu:glibc`, `oracle:mysql`,
+`python_software_foundation:cpython`, …): the libc's automatically, the
+runtime's from each module's `sbomExtraComponents` (see "Adding a new image").
+Scan with [grype](https://github.com/anchore/grype), which matches those CPEs
+against NVD:
 
 ```bash
 # System packages + runtime, via the SBOM:
@@ -185,8 +196,9 @@ grype ghcr.io/mathiasror/your-app:tag
 Python dist-info, and the build info embedded in **Go binaries** (and Rust
 binaries built with `cargo auditable`) — so the final app image is scannable
 too. CI scans every SBOM with grype on every build, guarded by a known-CVE
-canary fixture: if the scanner ever parses these SBOMs to zero findings, the
-build fails instead of reporting clean. Findings are in the build log and the
+canary fixture: if grype ever parses the fixture to zero findings (a broken
+scanner or DB), the build fails instead of every image reporting clean.
+Findings are in the build log and the
 SBOM is uploaded as a build artifact. Scanning is **report-only** for these
 base images (so they publish with their findings visible); enforce hard gates
 in your *app* image, where you control the dependency set. CPE matching of Nix
@@ -205,12 +217,21 @@ image carries a **CycloneDX SBOM attestation** (the closure SBOM above, attached
 to the image so it travels with it, not just a CI artifact) and a **SLSA
 build-provenance attestation** (builder, source commit, invocation). Signatures
 and attestations are recorded in the public Rekor transparency log; the multi-arch
-manifest lists are signed too, so verifying by tag works.
+manifest lists are signed too, so verifying by tag works. Per-arch tags are
+moved onto a digest only *after* its signature and both attestations are
+attached and verified, so a tag never points at an unsigned image. The
+`varde-go` / `varde-rust` aliases get the per-arch signature and attestations
+copied into their own repo (and re-verified there) before their lists are
+signed and tagged, so every command below works with the alias name as well.
+
+The one signing identity is `build.yml` **on `main`** — publishing is refused
+from any other ref — so verify against that exact identity rather than a
+repo-wide pattern (which would also accept other workflows and branches):
 
 ```bash
-# Verify a signature (the identity is this repo's build.yml workflow):
+# Verify a signature (the identity is this repo's build.yml workflow on main):
 cosign verify \
-  --certificate-identity-regexp '^https://github.com/mathiasror/varde/' \
+  --certificate-identity https://github.com/mathiasror/varde/.github/workflows/build.yml@refs/heads/main \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   ghcr.io/mathiasror/varde-jre:21
 
@@ -218,12 +239,17 @@ cosign verify \
 # actually built) — resolve a platform digest first:
 d=$(crane digest ghcr.io/mathiasror/varde-jre:21 --platform linux/amd64)
 
-# Verify SLSA build provenance (built by this repo's workflow):
-gh attestation verify "oci://ghcr.io/mathiasror/varde-jre@${d}" --owner mathiasror
+# Verify SLSA build provenance (same exact identity; --bundle-from-oci reads
+# the attestation attached to the image in GHCR, the copy CI gates on, rather
+# than the GitHub attestations API):
+gh attestation verify "oci://ghcr.io/mathiasror/varde-jre@${d}" \
+  --repo mathiasror/varde \
+  --cert-identity https://github.com/mathiasror/varde/.github/workflows/build.yml@refs/heads/main \
+  --bundle-from-oci
 
 # Verify the CycloneDX SBOM attestation (and extract the SBOM):
 cosign verify-attestation --type cyclonedx \
-  --certificate-identity-regexp '^https://github.com/mathiasror/varde/' \
+  --certificate-identity https://github.com/mathiasror/varde/.github/workflows/build.yml@refs/heads/main \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   "ghcr.io/mathiasror/varde-jre@${d}" \
   | jq -r '.payload | @base64d | fromjson | .predicate' > sbom.cdx.json
@@ -238,15 +264,25 @@ data-driven from the flake:
    every image/variant (including libc) with `amd64` + `arm64`.
 2. **build** — native runners (`ubuntu-latest` / `ubuntu-24.04-arm`): build the
    image, generate the SBOM, grype-scan it (behind a known-CVE canary),
-   Trivy-scan the image filesystem, smoke-test it, push per-arch tags to GHCR
-   (skipped on PRs).
+   Trivy-scan the image filesystem, smoke-test it, push it to GHCR by digest,
+   sign + attest + verify it, and only then move the per-arch tag onto that
+   digest (all skipped on PRs).
 3. **manifest** — assembles multi-arch lists per libc tag, the bare-version and
    `:latest` / `:latest-glibc` aliases, and the `varde-go` / `varde-rust` alias
-   digests.
+   digests — from this run's verified per-arch digests, per image:tag pair. A
+   leg that failed or timed out holds back only the lists that need it (the
+   job names them and goes red); every other pair is still refreshed.
+
+Publishing happens from `main` only: `push` is filtered to `main` and a
+`workflow_dispatch` from any other ref fails in `setup`.
 
 [`.github/workflows/e2e.yml`](.github/workflows/e2e.yml) builds every example on
 top of a locally-built base, smoke-tests that the app runs, and asserts an
-image-size budget ([`scripts/e2e.sh`](scripts/e2e.sh)).
+image-size budget ([`scripts/e2e.sh`](scripts/e2e.sh)) — on PRs that touch an
+input, and on `main` after every successful `build-image` run (each weekly
+bump, and every merge that rebuilds the images — an examples-only merge is
+covered by its PR-time run), warm from the Cachix cache that build just
+populated.
 
 Both `build` and `e2e` push/pull a shared **Cachix** cache so the from-source
 musl variants are compiled once and reused across jobs, later runs, and the e2e
@@ -275,9 +311,12 @@ reproduces it.
 > does the "just `docker pull`, no token" promise hold.
 
 > **Publish checklist:** after a run on `main`,
-> - confirm the **manifest** job ran (not skipped) — a run that fails or is
->   cancelled after **build** leaves GHCR with per-arch tags but no manifest
->   lists, and every documented `FROM` breaks;
+> - a red run's **manifest** job lists the tags whose manifest lists were *not*
+>   refreshed (a build leg failed or timed out); per-arch tags of the legs that
+>   succeeded are always current and signed. Re-run the failed legs, or fix and
+>   dispatch again from `main`; re-running only works within 7 days of the
+>   original run (the per-leg digest artifacts the manifest job stitches from
+>   expire then) — after that, dispatch a fresh build from `main`;
 > - confirm an anonymous `docker pull ghcr.io/mathiasror/varde-jre:latest` (any
 >   bare tag) resolves;
 > - first publish only: flip each `varde-*` package to **Public** (previous note).
@@ -306,6 +345,14 @@ version with the libc axis via `vardeLib.mkVariants`:
           cmd = [ … ];                 # optional
           env = [ "PATH=/runtime/bin" ];
           fhs = false;                 # true => add the libc's loader + libs for external native code
+          # The identity NVD files this runtime's CVEs under — sbomnix's
+          # vendor=name guess usually is NOT it, and a wrong one matches
+          # nothing, silently. Find it with `grype db search pkg <name>`.
+          sbomExtraComponents = [
+            (vardeLib.sbomComponent { vendor = "…"; product = "…"; version = p.<pkg>.version; })
+          ];
+          # stopSignal = "SIGQUIT";    # optional: a daemon whose graceful shutdown isn't SIGTERM
+          # closureAllow = [ … ];      # optional: EREs on full store paths exempted from the closure guard
         };
       };
     };
@@ -327,7 +374,7 @@ A compiled-binary base is a one-liner — reuse a shared spec:
 The framework adds the non-root user, CA certs, tzdata, `/app`, `/tmp`, common
 env, labels, and the SBOM app for free. Helpers live in
 [`lib/default.nix`](lib/default.nix) (`relocate`, `mkLibcEnv`, `mkVariants`,
-`buildImage`, `buildSbomApp`). See [`images/python.nix`](images/python.nix) for a
+`sbomComponent`, `buildImage`, `buildSbomApp`). See [`images/python.nix`](images/python.nix) for a
 worked libc-axis module, or [`images/nginx.nix`](images/nginx.nix) for a service.
 To publish a name as an alias of another image, add it to `imageAliases` in
 [`flake.nix`](flake.nix).
@@ -341,8 +388,10 @@ images/<name>.nix               # one module per image (+ images/nginx.conf)
 examples/<image>/<variant>/     # buildable "drop your app in" examples
 scripts/e2e.sh                  # build examples on local bases, smoke + size budgets
 .github/workflows/build.yml     # data-driven matrix build -> grype -> GHCR
+.github/workflows/bump-lock.yml # weekly flake.lock bump -> commit to main -> dispatch build
 .github/workflows/e2e.yml       # build + smoke-test the examples
 .github/workflows/pages.yml     # deploy the landing page to GitHub Pages
+.github/canary/                 # known-CVE SBOM fixture that guards the grype scan
 site/                           # landing page (static, no build step)
 docs/design.md                  # design notes
 LICENSE                         # Apache-2.0
