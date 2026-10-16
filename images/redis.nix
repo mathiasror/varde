@@ -7,8 +7,17 @@
 # Built for both libcs: the bare tag (:latest) is musl; opt into glibc with
 # :latest-glibc.
 #
-# Contract: run as-is (redis binds 0.0.0.0:6379 with defaults), or pass a config
-# by overriding CMD: `CMD ["/app/redis.conf"]` (see examples/redis/).
+# Contract: run as-is, or pass a config by overriding CMD:
+# `CMD ["/app/redis.conf"]` (see examples/redis/). Run as-is, redis listens on
+# all interfaces (`* -::*`), port 6379, with upstream defaults — which include
+# protected mode: with no password set, Redis 8 answers every non-loopback
+# client with -DENIED, so only same-network-namespace clients (docker exec, a
+# sidecar over localhost) get in. Unlike the docker-library image, this one
+# does NOT patch that default off. To serve remote clients (`-p 6379:6379`,
+# other containers), supply a redis.conf via CMD (the example sets
+# `protected-mode no` for the demo) or pass directives through CMD, e.g.
+# `docker run -p 6379:6379 varde-redis --requirepass <secret>` (preferred) or
+# `--protected-mode no` (trusted networks only).
 {
   pkgs,
   vardeLib,
@@ -22,11 +31,10 @@ let
       # sd_notify is dead weight in a container (no systemd to talk to), and
       # systemd's build closure drags in clang/llvm/bpftools/tpm2-tss — on musl
       # that's hours of from-source compiles that blow the 6h CI job limit.
-      #
-      # On musl the in-sandbox TCL test suite dies instantly ("Error: Connection
-      # reset by peer") on both arches; the same suite passes on glibc, so keep
-      # it there. The image's real runtime proof is CI's docker smoke test + the
-      # e2e example, which exercise the actual redis-server binary.
+      # (nixpkgs' redis skips its TCL test suite on every platform — it lives
+      # in a `tests` passthru — so the image's runtime proof is CI's docker
+      # smoke test + the e2e example, which exercise the actual redis-server
+      # binary.)
       # jemalloc's output bundles bin/ scripts — jemalloc-config and
       # jemalloc.sh are bash, jeprof is perl — and redis's RPATH link to
       # lib/libjemalloc.so dragged that whole output (bash included) into the
@@ -37,12 +45,10 @@ let
           rm -rf "$out/bin"
         '';
       });
-      redis =
-        (p.redis.override {
-          withSystemd = false;
-          inherit jemalloc;
-        }).overrideAttrs
-          (lib.optionalAttrs p.stdenv.hostPlatform.isMusl { doCheck = false; });
+      redis = p.redis.override {
+        withSystemd = false;
+        inherit jemalloc;
+      };
     in
     {
       contents = [ (vardeLib.relocate p "varde-redis-root-${redis.version}" "runtime" redis) ];
