@@ -76,10 +76,24 @@ in
         # above. Java's CUPS print service simply fails cleanly if ever
         # asked. Cheap: temurin-bin is a prebuilt tarball, so this only
         # re-runs its install phase, not a JDK build.
+        #
+        # Sound goes the same way: lib/libjsound.so (javax.sound) is the only
+        # consumer of alsa-lib, whose UCM config (alsa-ucm-conf) hard-codes
+        # coreutils' rm/mkdir — so it put coreutils in every JRE image, which
+        # lib/default.nix's closure guard rejects. Delete the library and its
+        # alsa-lib input; javax.sound fails cleanly if ever asked. preFixup,
+        # not postInstall: temurin's installPhase never runs that hook, and
+        # this must happen before autoPatchelf (a postFixup hook) looks for
+        # libasound.
         jre =
           p: attr:
           jreSpec p (
             (p.${attr}.override { gtkSupport = false; }).overrideAttrs (prev: {
+              buildInputs = lib.filter (d: lib.getName d != "alsa-lib") prev.buildInputs;
+              preFixup = ''
+                find "$out" -name 'libjsound.so' -delete
+              ''
+              + (prev.preFixup or "");
               postFixup = (prev.postFixup or "") + ''
                 find "$out" -name '.*-wrapped' -type f | while IFS= read -r w; do
                   b="$(dirname "$w")/$(basename "$w" | sed 's/^\.//; s/-wrapped$//')"
