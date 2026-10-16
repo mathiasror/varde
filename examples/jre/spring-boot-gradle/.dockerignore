@@ -3,4 +3,10 @@
 build/
 .gradle/
 # There is intentionally no Gradle wrapper in this example; ignore it if present.
+# Scoped to gradle/wrapper/ rather than gradle/ so a gradle/libs.versions.toml
+# version catalog still reaches the build if one is added later.
+gradlew
+gradlew.bat
+gradle/wrapper/
+# Never ship repo metadata into the build context.
 .git/

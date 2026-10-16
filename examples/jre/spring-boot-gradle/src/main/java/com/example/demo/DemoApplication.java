@@ -13,9 +13,12 @@ import org.springframework.web.bind.annotation.RestController;
  * GET on "/" returns the plain string below. The e2e check asserts the response
  * body contains "varde ok".
  *
- * <p>Package/imports are unchanged in Spring Boot 4.1:
- * {@code org.springframework.boot.SpringApplication} and
- * {@code org.springframework.boot.autoconfigure.SpringBootApplication}.
+ * <p>The Java packages/imports are unchanged in Spring Boot 4.x
+ * ({@code org.springframework.boot.SpringApplication} and
+ * {@code org.springframework.boot.autoconfigure.SpringBootApplication}), but
+ * the Gradle starter was renamed in 4.0: build.gradle depends on
+ * {@code spring-boot-starter-webmvc}, not the deprecated
+ * {@code spring-boot-starter-web}.
  */
 @SpringBootApplication
 @RestController
