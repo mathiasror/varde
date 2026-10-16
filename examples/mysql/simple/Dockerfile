@@ -6,7 +6,7 @@
 #   - non-root user 1000:1000, WORKDIR /app, NO shell, NO package manager.
 #   - The base sets ENTRYPOINT ["/runtime/bin/mysqld"] and NO default CMD.
 #     Sane defaults are baked into /etc/my.cnf (datadir=/app/data, socket and
-#     pid file under /tmp, bind-address=0.0.0.0, X-plugin off, server-side
+#     pid file under /tmp, bind-address=*, X-plugin off, server-side
 #     import/export disabled). Any mysqld flag you pass overrides the file.
 #   - MySQL needs a ONE-TIME data-directory initialization before it can
 #     serve. MySQL 8 does this natively — `mysqld --initialize-insecure` —
@@ -56,4 +56,5 @@ COPY init.sql /app/init.sql
 RUN ["/runtime/bin/mysqld", "--initialize-insecure", "--init-file=/app/init.sql", "--innodb-redo-log-capacity=8388608"]
 
 # No CMD: the inherited entrypoint starts mysqld with the baked /etc/my.cnf
-# defaults, serving the pre-initialized /app/data on 0.0.0.0:3306.
+# defaults, serving the pre-initialized /app/data on port 3306, both
+# address families.
