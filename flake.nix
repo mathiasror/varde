@@ -63,6 +63,22 @@
           else
             prev.p11-kit;
       };
+      # sqlite's check phase (`make check` -> testrunner.tcl mdevtest) builds
+      # fuzzcheck with ASan and UBSan, which musl does not support, so every
+      # musl build fails ("FAILED: Build All-Debug (fuzzcheck-asan)" /
+      # "(fuzzcheck-ubsan)", plus capi3c.test) — Hydra never builds musl, so
+      # nobody upstream sees it. Every musl image reaches sqlite (python,
+      # node, php, postgres, …), so this kept every musl leg red from
+      # 2026-09-14 on. Musl-only for the same cache reason as p11kit above;
+      # glibc sqlite still runs the full suite on Hydra, and the images'
+      # runtime proof is CI's smoke tests + e2e.
+      sqliteMuslNoCheck = final: prev: {
+        sqlite =
+          if prev.stdenv.hostPlatform.isMusl then
+            prev.sqlite.overrideAttrs { doCheck = false; }
+          else
+            prev.sqlite;
+      };
       # One nixpkgs instantiation per system, shared by every consumer below.
       # Attribute sets memoize; a plain `pkgsFor = system: import nixpkgs …`
       # function does not (Nix never caches function application), so every
@@ -71,7 +87,10 @@
         system:
         import nixpkgs {
           inherit system;
-          overlays = [ p11kitTeardownRaceFix ];
+          overlays = [
+            p11kitTeardownRaceFix
+            sqliteMuslNoCheck
+          ];
         }
       );
 
