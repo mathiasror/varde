@@ -2,10 +2,11 @@
 #
 # Contract: drop your app at /app/main.py (override CMD for a different module).
 # No shell, so the interpreter runs your script directly. These interpreters
-# ship no `pip` binary (only the inert `ensurepip` stdlib module), so the base
-# is already package-manager-free — install deps in a builder stage and COPY
-# them in (see examples/python/). `fhs = true` provides an FHS libc so wheels'
-# externally-compiled .so extensions load at runtime.
+# ship no `pip` binary, and the stripped copy below also drops `ensurepip`
+# and its bundled pip/setuptools wheels, so the base is package-manager-free
+# — install deps in a builder stage and COPY them in (see examples/python/).
+# `fhs = true` provides an FHS libc so wheels' externally-compiled .so
+# extensions load at runtime.
 #
 # Built for both libcs: the bare tag (e.g. :3.13) is musl; opt into glibc with
 # the :3.13-glibc tag. musl wheels are the musllinux ones; glibc wheels manylinux.
@@ -56,6 +57,22 @@ let
             rm -f bin/*-config bin/idle*
             rm -rf lib/python*/config-* lib/pkgconfig nix-support
             rm -f lib/python*/ctypes/macholib/fetch_macholib
+
+            # ensurepip ships pip/setuptools wheels under _bundled/ (nixpkgs'
+            # --without-ensurepip only skips the install-time bootstrap); with
+            # a writable /app or /tmp, `-m ensurepip --root` or `-m venv` would
+            # turn them into a working pip. Drop the module: the image ships no
+            # package manager, and `-m venv` now requires --without-pip.
+            rm -rf lib/python*/ensurepip
+            # Dead code in this image (no _tkinter, no Tk): the same rm's as
+            # nixpkgs' stripIdlelib/stripTkinter/stripTests hooks. stripTests
+            # also drops the NESTED suites (`**/test{,s}`: 3.11's ctypes/test,
+            # distutils/tests, unittest/test and lib2to3/tests; none in 3.12+) —
+            # pure fixtures nothing imports at runtime. site-packages holds only
+            # nixpkgs' sitecustomize/_sysconfigdata (app code arrives later via
+            # COPY into /app), so nothing but stdlib fixtures can match.
+            rm -rf lib/python*/idlelib lib/python*/turtledemo lib/python*/tkinter lib/python*/test
+            find lib/python*/ -mindepth 2 -type d \( -name test -o -name tests \) -prune -exec rm -rf {} +
 
             # bin/python3.x is a small launcher that links libpython3.x.so
             # through a RUNPATH pointing at the STOCK store path (CPython is
