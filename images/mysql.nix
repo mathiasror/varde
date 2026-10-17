@@ -163,7 +163,7 @@ let
 
       # SBOM: the pruned /runtime severed its reference to ${mysql} (above), so
       # the server would not be a named component in its own SBOM — and NVD
-      # files MySQL CVEs under vendor `oracle`, not the vendor=name CPE sbomnix
+      # files MySQL CVEs under vendor `oracle`, not the vendor=name CPE syft
       # would derive. Scan metadata only; never enters image contents.
       sbomExtraComponents = [
         (vardeLib.sbomComponent {

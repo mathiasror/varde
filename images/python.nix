@@ -118,7 +118,7 @@ let
       fhs = true; # manylinux (glibc) / musllinux (musl) wheels load native .so extensions
 
       # SBOM: NVD files current CPython CVEs under
-      # `python_software_foundation:cpython`, so the vendor=name CPE sbomnix
+      # `python_software_foundation:cpython`, so the vendor=name CPE syft
       # derives (python3:python3) matches nothing. Scan metadata only.
       sbomExtraComponents = [
         (vardeLib.sbomComponent {

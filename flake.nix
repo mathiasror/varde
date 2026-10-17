@@ -119,31 +119,38 @@
         lib.concatLists (
           lib.mapAttrsToList (
             image: m:
-            lib.mapAttrsToList (tag: spec: {
-              inherit image tag;
-              # `libc` is a required spec field (see the lib/default.nix header);
-              # imageContents and buildSbomApp read it without a default, so a
-              # module that bypasses mkVariants/the base specs fails here, at
-              # eval (CI's setup job evals .#ciMatrix), rather than shipping a
-              # libc the SBOM does not know about.
-              libc =
-                if spec ? libc then
-                  spec.libc
-                else
-                  throw "image '${image}': variant \"${tag}\" has no `libc` — build it with vardeLib.mkVariants or staticSpec/glibcSpec/muslSpec (see the lib/default.nix header)";
-              attr = "image-${image}-${sanitize tag}";
-              sbomName = "sbom-${image}-${sanitize tag}";
-              drv = vardeLib.buildImage pkgs {
-                name = "varde-${image}";
-                inherit tag;
-                inherit (m) description;
-                inherit spec;
-              };
-              sbomApp = vardeLib.buildSbomApp pkgs toolsPkgs {
-                name = "varde-${image}-${sanitize tag}";
-                inherit spec;
-              };
-            }) m.variants
+            lib.mapAttrsToList (
+              tag: spec:
+              let
+                drv = vardeLib.buildImage pkgs {
+                  name = "varde-${image}";
+                  inherit tag;
+                  inherit (m) description;
+                  inherit spec;
+                };
+              in
+              {
+                inherit image tag drv;
+                # `libc` is a required spec field (see the lib/default.nix header);
+                # imageContents and buildSbomApp read it without a default, so a
+                # module that bypasses mkVariants/the base specs fails here, at
+                # eval (CI's setup job evals .#ciMatrix), rather than shipping a
+                # libc the SBOM does not know about.
+                libc =
+                  if spec ? libc then
+                    spec.libc
+                  else
+                    throw "image '${image}': variant \"${tag}\" has no `libc` — build it with vardeLib.mkVariants or staticSpec/glibcSpec/muslSpec (see the lib/default.nix header)";
+                attr = "image-${image}-${sanitize tag}";
+                sbomName = "sbom-${image}-${sanitize tag}";
+                # SBOM of the image tarball itself (see buildSbomApp).
+                sbomApp = vardeLib.buildSbomApp pkgs toolsPkgs {
+                  name = "varde-${image}-${sanitize tag}";
+                  inherit spec;
+                  image = drv;
+                };
+              }
+            ) m.variants
           ) evaluated.${system}
         );
 

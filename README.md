@@ -170,40 +170,62 @@ List everything that exists: `nix eval --json .#ciMatrix` (each entry carries it
 
 ## Vulnerability scanning (grype)
 
-A distroless image has **no OS package database**, so an image scanner alone
-reports no system packages. We close that gap with Nix's exact closure: for
-every image, [`sbomnix`](https://github.com/tiiuae/sbomnix) emits a **CycloneDX
-SBOM with CPEs** covering the system packages (glibc/musl, zlib, …) and the
-language runtime. sbomnix guesses `vendor = product = pname`, and a wrong
-vendor string matches nothing, silently — so the SBOM app *appends* a
-hand-authored component per image carrying the exact identity NVD actually
-files CVEs under (`gnu:glibc`, `oracle:mysql`,
-`python_software_foundation:cpython`, …): the libc's automatically, the
-runtime's from each module's `sbomExtraComponents` (see "Adding a new image").
-Scan with [grype](https://github.com/anchore/grype), which matches those CPEs
-against NVD:
+Scan a varde image like any other image — with
+[grype](https://github.com/anchore/grype):
 
 ```bash
-# System packages + runtime, via the SBOM:
-nix run .#sbom-jre-21-musl -- sbom.cdx.json
-grype sbom:sbom.cdx.json
-
-# Your app's own dependencies, once the app image is built:
-grype ghcr.io/mathiasror/your-app:tag
+grype ghcr.io/mathiasror/varde-postgres:17
 ```
 
-`grype <image>` natively reads app dependencies from JARs, `node_modules`,
-Python dist-info, and the build info embedded in **Go binaries** (and Rust
-binaries built with `cargo auditable`) — so the final app image is scannable
-too. CI scans every SBOM with grype on every build, guarded by a known-CVE
+A distroless image has **no OS package database**, but a Nix image keeps every
+package under `/nix/store/<hash>-<name>-<version>`, and grype (via syft's Nix
+cataloger) reads those paths straight out of the image layers — glibc/musl,
+openssl, zlib, the language runtime, everything in the closure — and matches
+them against NVD by CPE. The same command covers your app's own dependencies
+once you build on top: grype natively reads JARs, `node_modules`, Python
+dist-info, and the build info embedded in **Go binaries** (and Rust binaries
+built with `cargo auditable`).
+
+> **Trivy reports these images clean — that result is wrong.** Trivy finds
+> vulnerabilities only through a distro package database (apk/dpkg/rpm) or
+> language lockfiles; it has no Nix support and no CPE matching, so it sees
+> zero packages in a Nix-built image and reports 0 vulnerabilities whatever
+> ships (on 2026-10-17, `trivy image` on `varde-postgres:17` found 0 where
+> grype found 40). Embedding or attaching an SBOM does not change that: given
+> a CycloneDX SBOM with a known-vulnerable openssl, trivy still finds nothing.
+> Use grype. Trivy remains useful on these images for its secret scanning.
+
+For the most complete result, scan the **attested SBOM** CI publishes with
+every image. It is the same syft inventory plus hand-authored components that
+carry the exact identity NVD files CVEs under (`gnu:glibc`,
+`musl-libc:musl`, `oracle:openjdk`, `python_software_foundation:cpython`, …):
+the Nix cataloger guesses `vendor = product = pname`, and a wrong vendor
+matches nothing, silently. Extract it with the `cosign verify-attestation`
+command under
+[Supply chain](#supply-chain-signatures-sbom--provenance), then:
+
+```bash
+grype sbom:sbom.cdx.json
+```
+
+Or generate it from the flake on Linux (fetches the image tarball from the
+cache, or builds it, and reads it):
+
+```bash
+nix run .#sbom-jre-21-musl -- sbom.cdx.json
+grype sbom:sbom.cdx.json
+```
+
+CI scans every image's SBOM with grype on every build, guarded by a known-CVE
 canary fixture: if grype ever parses the fixture to zero findings (a broken
 scanner or DB), the build fails instead of every image reporting clean.
-Findings are in the build log and the
-SBOM is uploaded as a build artifact. Scanning is **report-only** for these
-base images (so they publish with their findings visible); enforce hard gates
-in your *app* image, where you control the dependency set. CPE matching of Nix
-store contents against NVD is best-effort — expect occasional false positives
-and misses compared to a distro package database.
+Findings are in the build log and the SBOM is uploaded as a build artifact.
+Scanning is **report-only** for these base images (so they publish with their
+findings visible); enforce hard gates in your *app* image, where you control
+the dependency set. CPE matching of Nix store contents against NVD is
+best-effort, and it compares upstream versions — a CVE nixpkgs fixed with a
+patch still shows until the version moves — so expect occasional false
+positives and misses compared to a distro package database.
 
 > SARIF upload to the GitHub **Security** tab is wired up but non-fatal — scan
 > findings land under **Security → Code scanning** per image/arch. (On a private
@@ -264,7 +286,7 @@ data-driven from the flake:
    every image/variant (including libc) with `amd64` + `arm64`.
 2. **build** — native runners (`ubuntu-latest` / `ubuntu-24.04-arm`): build the
    image, generate the SBOM, grype-scan it (behind a known-CVE canary),
-   Trivy-scan the image filesystem, smoke-test it, push it to GHCR by digest,
+   Trivy-scan the image filesystem for secrets, smoke-test it, push it to GHCR by digest,
    sign + attest + verify it, and only then move the per-arch tag onto that
    digest (all skipped on PRs).
 3. **manifest** — assembles multi-arch lists per libc tag, the bare-version and
@@ -345,7 +367,7 @@ version with the libc axis via `vardeLib.mkVariants`:
           cmd = [ … ];                 # optional
           env = [ "PATH=/runtime/bin" ];
           fhs = false;                 # true => add the libc's loader + libs for external native code
-          # The identity NVD files this runtime's CVEs under — sbomnix's
+          # The identity NVD files this runtime's CVEs under — the scanner's
           # vendor=name guess usually is NOT it, and a wrong one matches
           # nothing, silently. Find it with `grype db search pkg <name>`.
           sbomExtraComponents = [

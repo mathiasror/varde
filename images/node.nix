@@ -105,7 +105,7 @@ let
       fhs = true;
 
       # SBOM: NVD files Node.js CVEs under `nodejs:node.js`, so the vendor=name
-      # CPE sbomnix derives (nodejs-slim:nodejs-slim) matches nothing. Scan
+      # CPE syft derives (nodejs-slim:nodejs-slim) matches nothing. Scan
       # metadata only.
       sbomExtraComponents = [
         (vardeLib.sbomComponent {

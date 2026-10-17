@@ -46,7 +46,7 @@ let
     # SBOM: Temurin has essentially no NVD identity of its own — JDK CVEs are
     # filed against the upstream codebase as `oracle:openjdk` (whose CPE
     # versions use the same 21.0.x update scheme) — so the vendor=name CPE
-    # sbomnix derives (temurin-jre-bin:…) matches nothing. Scan metadata only.
+    # syft derives (temurin-jre-bin:…) matches nothing. Scan metadata only.
     sbomExtraComponents = [
       (vardeLib.sbomComponent {
         vendor = "oracle";

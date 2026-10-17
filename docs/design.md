@@ -108,32 +108,46 @@ static binary needs no loader, and nixpkgs binaries find their libs via RPATH.
 
 ## SBOM and scanning
 
-A distroless image has no OS package database, so an image scanner alone finds
-no system packages. Nix knows the exact closure, so `sbomnix` emits a CycloneDX
-SBOM (with CPEs) covering the system packages (glibc or musl, zlib, …) and the
-runtime. Where NVD files a component under a different vendor than sbomnix's
-vendor=name guess (gnu:glibc, oracle:mysql, python_software_foundation:cpython,
-f5:nginx *and* f5:nginx_open_source — NVD splits open-source nginx CVEs across
-both products, …) — or where a pruned runtime severed the store reference that would
-have named it at all (mysql, rabbitmq/erlang) — the SBOM app appends a
-hand-authored component with the exact NVD CPE, versioned from the same package
-binding that builds the image. The SBOM is generated as build metadata, kept
-out of the image, and scanned with `grype sbom:…`; CI guards the scanner itself
-with a known-CVE canary fixture that must produce findings, so a silently no-op
-scan fails the build instead of reporting clean. An application's own
-dependencies are covered natively by `grype <image>` once its image is built.
-CPE-based matching of Nix store contents is best-effort — expect some noise
-relative to a distro package database.
+A distroless image has no OS package database, but every package in a Nix
+image sits under `/nix/store/<hash>-<name>-<version>`. syft's Nix cataloger
+reads those paths out of the image layers, so `grype <image>` — which runs
+syft — inventories the shipped closure (glibc or musl, zlib, …, the runtime)
+and matches it against NVD by CPE. Trivy cannot: it finds vulnerabilities only
+through a distro package database or language lockfiles, has no Nix support
+and no CPE matching, and reports 0 on these images whatever ships. grype is
+the supported scanner; CI runs trivy for secrets only, so it never publishes
+that false "clean".
 
-The SBOM tooling (sbomnix, the modern Nix it needs on PATH, jq, the script
-wrapper) comes from a separately pinned nixpkgs — the `nixpkgs-tools` flake
-input, which the weekly bump never touches — while the closure being SBOM'd
-and the component versions keep tracking the moving `nixpkgs`. The split
-exists because the July 2026 weekly bumps landed a nixpkgs where sbomnix no
-longer built (its python3.14-df-diskcache dependency stopped compiling), and
-since every image carries an SBOM app, that single tooling breakage failed
-every CI build job for two weeks. A bump can now only break the image contents
-actually being rebuilt, never the machinery that packages them.
+The SBOM app runs that same syft over the built image tarball, so the SBOM CI
+scans and attests matches what a user gets from scanning the pulled image.
+Reading the tarball rather than the Nix store matters for CI time: the
+previous generator (sbomnix) walked the store closure, so it had to realise
+every package even when the image itself came from cache — with musl builds
+evicted from Cachix that meant recompiling openssl, cmake, postgresql… in the
+SBOM step. Where NVD files a component under a different vendor than the
+cataloger's vendor=name guess (gnu:glibc, oracle:mysql,
+python_software_foundation:cpython, f5:nginx *and* f5:nginx_open_source — NVD
+splits open-source nginx CVEs across both products, …) — or where a pruned
+runtime severed the store reference that would have named it at all (mysql,
+rabbitmq/erlang) — the SBOM app appends a hand-authored component with the
+exact NVD CPE, versioned from the same package binding that builds the image.
+The SBOM is build metadata, attested to the image (not inside it), and scanned
+with `grype sbom:…`; CI guards the scanner itself with a known-CVE canary
+fixture that must produce findings, so a silently no-op scan fails the build
+instead of reporting clean. CPE-based matching of Nix store contents is
+best-effort — it compares upstream versions, so a CVE nixpkgs patched without
+a version bump still shows, and expect some noise relative to a distro
+package database.
+
+The SBOM tooling (syft, jq, the script wrapper) comes from a separately pinned
+nixpkgs — the `nixpkgs-tools` flake input, which the weekly bump never
+touches — while the images and the component versions keep tracking the
+moving `nixpkgs`. The split exists because the July 2026 weekly bumps landed a
+nixpkgs where the SBOM tool of the day (sbomnix) no longer built (its
+python3.14-df-diskcache dependency stopped compiling), and since every image
+carries an SBOM app, that single tooling breakage failed every CI build job
+for two weeks. A bump can now only break the image contents actually being
+rebuilt, never the machinery that packages them.
 
 ## CI and tagging
 

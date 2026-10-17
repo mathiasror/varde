@@ -330,14 +330,24 @@ rec {
       purl = "pkg:generic/${name}@${version}";
     };
 
-  # CycloneDX SBOM (with CPEs) over the runtime closure of everything in the
-  # image — system packages (glibc, zlib, …) plus the language runtime. Exposed
-  # as an app because sbomnix needs nix-store access (cannot run in a sandbox).
+  # CycloneDX SBOM (with CPEs) of the built image — system packages (glibc,
+  # zlib, …) plus the language runtime — read by syft straight from the image
+  # tarball. syft's Nix cataloger recognises the /nix/store paths inside the
+  # layers, i.e. exactly the runtime closure that ships, and it is the same
+  # cataloger `grype <image>` runs, so the SBOM CI scans and attests matches
+  # what a user gets from scanning the pulled image.
+  #
+  # Reading the image, not the Nix store, is deliberate. The previous
+  # generator (sbomnix) walked the store closure, so `nix run` had to realise
+  # every package in it even when the image tarball itself came from cache —
+  # and with musl builds evicted from Cachix, each SBOM step recompiled
+  # openssl/cmake/postgresql/… from source (45 min for postgres:17-musl in
+  # run 39024610044). The tarball is all this app needs.
   #
   # The generated SBOM is best-effort in two ways this app corrects by
   # appending hand-authored components:
-  #   1. sbomnix derives every CPE as vendor = product = pname, but NVD files
-  #      CVEs under normalized vendors (gnu:glibc, oracle:mysql,
+  #   1. syft derives Nix packages' CPEs as vendor = product = pname, but NVD
+  #      files CVEs under normalized vendors (gnu:glibc, oracle:mysql,
   #      python_software_foundation:cpython, f5:nginx, …) — a wrong vendor
   #      matches nothing, silently. The libc component is appended here from
   #      spec.libc; runtimes with a non-obvious NVD identity append theirs via
@@ -349,22 +359,21 @@ rec {
   #      shipped software is not even a named component in its own closure.
   #
   # Two package sets, deliberately: `pkgs` (the moving image nixpkgs) supplies
-  # the contents being SBOM'd and the component versions — those MUST track
-  # what is actually shipped. `toolsPkgs` (the flake's pinned `nixpkgs-tools`
-  # input) supplies the machinery: sbomnix, the modern Nix it needs on PATH,
-  # jq, and the writeShellApplication wrapper. Split after the July 2026
-  # weekly bumps, where sbomnix stopped building (its python3.14-df-diskcache
-  # dependency fails to compile) and this one tooling breakage failed every
-  # image's CI job for two weeks — the tooling must not ride the same moving
-  # nixpkgs as the images it packages.
+  # the component versions — those MUST track what is actually shipped.
+  # `toolsPkgs` (the flake's pinned `nixpkgs-tools` input) supplies the
+  # machinery: syft, jq, and the writeShellApplication wrapper. Split after the
+  # July 2026 weekly bumps, where the SBOM tool of the day (sbomnix) stopped
+  # building and that one tooling breakage failed every image's CI job for two
+  # weeks — the tooling must not ride the same moving nixpkgs as the images it
+  # packages.
   buildSbomApp =
     pkgs: toolsPkgs:
-    { name, spec }:
+    {
+      name,
+      spec,
+      image,
+    }:
     let
-      closure = pkgs.runCommand "${name}-closure" { contents = imageContents pkgs spec; } ''
-        mkdir -p "$out"
-        for p in $contents; do ln -s "$p" "$out/$(basename "$p")"; done
-      '';
       # NVD identities per libc; a null libc (varde-static) contributes none.
       # `libc` is required (flake.nix's entriesFor throws on a spec without
       # it), so no default here: a fallback could append a libc component the
@@ -386,24 +395,22 @@ rec {
       extraComponents = libcComponents ++ (spec.sbomExtraComponents or [ ]);
       app = toolsPkgs.writeShellApplication {
         name = "${name}-sbom";
-        # sbomnix 1.8 parses `nix derivation show` and requires the modern
-        # `inputs` schema, but the nixpkgs `sbomnix` *wrapper* forces an older
-        # bundled Nix (2.31) whose output still uses legacy `inputDrvs` — which
-        # sbomnix then rejects. Put a current Nix (new schema) on PATH and call
-        # sbomnix's underlying entry point directly, bypassing that wrapper.
-        runtimeInputs = [ toolsPkgs.nixVersions.latest ];
+        runtimeInputs = [ toolsPkgs.gzip ];
         text = ''
           out="''${1:-${name}.cdx.json}"
           case "$out" in /*) ;; *) out="$PWD/$out" ;; esac
-          # Run in a temp dir: sbomnix also drops sbom.spdx.json/sbom.csv in CWD.
           work="$(mktemp -d)"
           trap 'rm -rf "$work"' EXIT
-          ( cd "$work" && ${toolsPkgs.sbomnix}/bin/.sbomnix-wrapped "${closure}" --cdx "$out" )
+          # syft's docker-archive source rejects a gzipped tarball ("invalid
+          # tar header"), and buildLayeredImage emits .tar.gz.
+          gzip -dc ${image} > "$work/image.tar"
+          SYFT_CHECK_FOR_APP_UPDATE=false ${toolsPkgs.syft}/bin/syft -q \
+            "docker-archive:$work/image.tar" -o "cyclonedx-json=$out"
           ${lib.optionalString (extraComponents != [ ]) ''
             # NVD-identity components (see the comment on buildSbomApp). Two
             # separate statements, not an `&&` list: bash exempts every command
             # but the last of an `&&` list from errexit, so a failing jq would
-            # skip the mv and let the app report success with the raw sbomnix
+            # skip the mv and let the app report success with the raw syft
             # output — which still passes CI's "components non-empty" check
             # while lacking exactly the components this step exists to add.
             # The temp file lives in $work so the EXIT trap cleans it up.

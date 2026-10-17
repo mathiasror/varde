@@ -63,7 +63,7 @@ let
       # under BOTH products `nginx` and `nginx_open_source` — e.g.
       # CVE-2025-23419 is only on f5:nginx while CVE-2024-7347 is only on
       # f5:nginx_open_source — so one CPE misses whichever product the other
-      # entries use, silently. The vendor=name CPE sbomnix derives matches
+      # entries use, silently. The vendor=name CPE syft derives matches
       # neither. Scan metadata only; the distinct `name` keeps the bom-refs
       # unique.
       sbomExtraComponents = [

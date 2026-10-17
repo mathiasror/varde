@@ -2,8 +2,8 @@ name: build-image
 
 # Builds every varde image discovered in images/*.nix — for each variant and on
 # native amd64 + arm64 runners — scans each with grype (system packages + runtime
-# via the SBOM's CPEs, guarded by a known-CVE canary) plus a Trivy filesystem
-# scan (secrets/artifacts), pushes each per-arch image to GHCR by digest,
+# via the SBOM's CPEs, guarded by a known-CVE canary) plus a Trivy secret scan
+# (Trivy cannot see Nix packages, so it is not a vulnerability scanner here), pushes each per-arch image to GHCR by digest,
 # keyless-signs it and attaches a CycloneDX SBOM + SLSA build-provenance
 # attestation (cosign + GitHub OIDC), verifies all of that, and only THEN moves
 # the per-arch tag onto the digest — so a documented tag never points at an
@@ -271,7 +271,9 @@ jobs:
           ATTR: ${{ matrix.attr }}
         run: nix build -L ".#${ATTR}"
 
-      - name: Generate SBOM (full closure incl. system packages)
+      # syft reads the built tarball (see buildSbomApp in lib/default.nix), so
+      # this needs nothing beyond `result` — no store closure to realise.
+      - name: Generate SBOM (from the image: system packages + runtime)
         env:
           SBOM: ${{ matrix.sbomName }}
         run: nix run ".#${SBOM}" -- sbom.cdx.json
@@ -321,15 +323,17 @@ jobs:
             '(.runs[0].results[]?.locations[]?.physicalLocation.artifactLocation.uri) |= (if . == "" then $uri else . end)' \
             grype-sbom.sarif > grype-sbom.sarif.tmp && mv grype-sbom.sarif.tmp grype-sbom.sarif
 
-      - name: "Trivy: image filesystem (app artifacts, secrets)"
-        env:
-          # Only for trivy's vulnerability-DB pulls from ghcr.io (anonymous
-          # pulls hit GHCR rate limits); scoped to this step on purpose.
-          TRIVY_USERNAME: ${{ github.actor }}
-          TRIVY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+      - name: "Trivy: secrets in the image filesystem"
         run: |
+          # Secrets only. Trivy finds vulnerabilities through a distro package
+          # database (apk/dpkg/rpm) or language lockfiles, and has no Nix
+          # support and no CPE matching — on a varde image its vuln scanner
+          # reports 0 no matter what ships (checked 2026-10-17 against
+          # varde-postgres:17, where grype finds 40 matches). Running it as a
+          # vuln scanner here would only publish that false "clean" to the
+          # Security tab; grype above is the vulnerability scan.
           nix run --inputs-from . nixpkgs-tools#trivy -- image --input result \
-            --format sarif --output trivy-image.sarif --severity HIGH,CRITICAL
+            --scanners secret --format sarif --output trivy-image.sarif
 
       # SARIF -> Security tab needs code scanning, which private repos only get
       # with GitHub Advanced Security. Keep it non-fatal so builds still publish;

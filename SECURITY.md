@@ -26,8 +26,9 @@ Node.js, glibc, and so on) using Nix. Two different kinds of findings:
   commit, so upstream fixes land without manual work and every published image
   is traceable to a commit that reproduces it (a build leg that fails holds
   back only that image:tag's manifest lists, not the whole weekly refresh, and
-  the run goes red naming them). Every image ships a CycloneDX
-  SBOM you can scan yourself with grype (see the README). A fix ultimately
+  the run goes red naming them). Scan any image yourself with
+  `grype <image>`, or grype its attested CycloneDX SBOM (see the README). Trivy
+  cannot see Nix packages and reports these images clean — don't rely on it. A fix ultimately
   belongs upstream/in nixpkgs; you're still welcome to flag one here if an
   image is lagging.
 
