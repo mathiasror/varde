@@ -811,10 +811,18 @@ jobs:
           # source repo into the alias repo, then gate on the same three
           # checks the build job runs before a per-arch tag moves — now
           # against the ALIAS repo, so the copy is exercised, not assumed.
-          # `oras cp -r` copies the manifest plus all its referrers (GHCR
-          # keeps them under the referrers-tag fallback, which oras handles);
-          # the destination is the bare repo, so the child lands by digest
-          # with no tag. `cosign copy` is NOT a substitute: it does not carry
+          # `oras cp -r` copies the manifest plus its referrer manifests; the
+          # destination is the bare repo, so the child lands by digest with no
+          # tag. That alone is NOT enough on GHCR: it has no referrers API
+          # (/v2/<repo>/referrers/<digest> 404s), so cosign finds the bundles
+          # only through the fallback index tagged `sha256-<hex>`, and oras
+          # wrote no such tag in the alias repo — it saw the bundle manifests
+          # as already present ("Exists"), skipped pushing them, and with them
+          # the fallback-index update (run 39033621049: varde-go had no
+          # sha256-<hex> tag, every alias child failed `cosign verify` with
+          # "no signatures found"). So copy that index tag explicitly too,
+          # after the child; it lists exactly the source's bundles.
+          # `cosign copy` is NOT a substitute: it does not carry
           # the referrer bundles cosign 3.x / attest-build-provenance push
           # (tried: the alias still failed `cosign verify` afterwards).
           # Deduplicated (`:latest` and `:<tag>` of an alias share children)
@@ -825,6 +833,8 @@ jobs:
           # arguments and kill the whole refresh.
           copy_one(){
             oras cp -r "$1" "${2%@*}"
+            ref_tag="$(printf '%s' "${2#*@}" | tr ':' '-')"
+            oras cp "${1%@*}:${ref_tag}" "${2%@*}:${ref_tag}"
             cosign verify \
               --certificate-identity "https://github.com/${GITHUB_WORKFLOW_REF}" \
               --certificate-oidc-issuer https://token.actions.githubusercontent.com \
