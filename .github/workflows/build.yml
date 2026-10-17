@@ -273,7 +273,7 @@ jobs:
 
       # syft reads the built tarball (see buildSbomApp in lib/default.nix), so
       # this needs nothing beyond `result` — no store closure to realise.
-      - name: Generate SBOM (from the image: system packages + runtime)
+      - name: "Generate SBOM (from the image: system packages + runtime)"
         env:
           SBOM: ${{ matrix.sbomName }}
         run: nix run ".#${SBOM}" -- sbom.cdx.json
