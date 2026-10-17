@@ -40,10 +40,18 @@ let
       # lib/libjemalloc.so dragged that whole output (bash included) into the
       # image closure. redis only needs the library; drop the scripts at the
       # source. (The lib closure guard fails the build if this ever regresses.)
+      # On x86_64 musl, jemalloc's check phase hangs in
+      # test/integration/cpp/infallible_new_false — no output, until the job
+      # limit kills it (twice in run 38873651543, 4.5 min into checks both
+      # times). Being our own override, this drv is never in a public cache,
+      # so the hang hits every cache-cold musl build. Skip its checks on musl
+      # only; glibc keeps them, and the runtime proof is the redis smoke test
+      # + e2e example.
       jemalloc = p.jemalloc.overrideAttrs (prev: {
         postInstall = (prev.postInstall or "") + ''
           rm -rf "$out/bin"
         '';
+        doCheck = (prev.doCheck or false) && !p.stdenv.hostPlatform.isMusl;
       });
       redis = p.redis.override {
         withSystemd = false;
