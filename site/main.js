@@ -40,6 +40,9 @@
   document.querySelectorAll(".btn-copy").forEach(function (btn) {
     var labelEl = btn.querySelector(".btn-copy__text");
     var defaultLabel = labelEl ? labelEl.textContent : "";
+    // The aria-label is the accessible name for the icon-only buttons, so it
+    // must be restored after the transient "Copied" announcement.
+    var defaultAria = btn.getAttribute("aria-label");
     var timer;
 
     btn.addEventListener("click", function () {
@@ -55,6 +58,8 @@
         timer = setTimeout(function () {
           btn.classList.remove("is-copied");
           if (labelEl) labelEl.textContent = defaultLabel;
+          if (defaultAria) btn.setAttribute("aria-label", defaultAria);
+          else btn.removeAttribute("aria-label");
         }, 1700);
       }).catch(function () {
         if (labelEl) labelEl.textContent = "Press Ctrl+C";

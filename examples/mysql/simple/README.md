@@ -10,7 +10,7 @@ MySQL 8 does this **natively** (`mysqld --initialize-insecure`), so it works in
 an image with no shell — that is why this image is MySQL and not MariaDB
 (`mariadb-install-db` is a shell script). The base image's entrypoint **is**
 `mysqld`, and `/etc/my.cnf` bakes the sane defaults (`datadir=/app/data`,
-socket + pid file under `/tmp`, `bind-address=0.0.0.0`, X-plugin off,
+socket + pid file under `/tmp`, `bind-address=*`, X-plugin off,
 `secure-file-priv=NULL`), so both steps are just arguments:
 
 ```sh

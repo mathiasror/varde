@@ -24,8 +24,11 @@ Node.js, glibc, and so on) using Nix. Two different kinds of findings:
 - **A CVE in a packaged upstream component** — these flow in automatically. A
   weekly job commits a `flake.lock` bump to `main` and rebuilds from that
   commit, so upstream fixes land without manual work and every published image
-  is traceable to a commit that reproduces it. Every image ships a CycloneDX
-  SBOM you can scan yourself with grype (see the README). A fix ultimately
+  is traceable to a commit that reproduces it (a build leg that fails holds
+  back only that image:tag's manifest lists, not the whole weekly refresh, and
+  the run goes red naming them). Scan any image yourself with
+  `grype <image>`, or grype its attested CycloneDX SBOM (see the README). Trivy
+  cannot see Nix packages and reports these images clean — don't rely on it. A fix ultimately
   belongs upstream/in nixpkgs; you're still welcome to flag one here if an
   image is lagging.
 
@@ -33,10 +36,14 @@ Node.js, glibc, and so on) using Nix. Two different kinds of findings:
 
 Published images are keyless-signed with cosign (Sigstore, via GitHub Actions
 OIDC) and carry a CycloneDX SBOM attestation and a SLSA build-provenance
-attestation. Before trusting an image you can verify the signature, provenance,
-and SBOM — see **Supply chain: signatures, SBOM & provenance** in the README for
-the exact `cosign verify` / `gh attestation verify` / `cosign verify-attestation`
-commands.
+attestation. The only identity that signs is
+`https://github.com/mathiasror/varde/.github/workflows/build.yml@refs/heads/main`
+— publishing is refused from any other ref — and a per-arch tag is moved onto
+a digest only after its signature and attestations are attached and verified.
+Before trusting an image you can verify the signature, provenance, and SBOM
+against that exact identity — see **Supply chain: signatures, SBOM &
+provenance** in the README for the `cosign verify` / `gh attestation verify` /
+`cosign verify-attestation` commands.
 
 ## Supported versions
 

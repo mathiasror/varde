@@ -2,21 +2,29 @@ name: build-image
 
 # Builds every varde image discovered in images/*.nix — for each variant and on
 # native amd64 + arm64 runners — scans each with grype (system packages + runtime
-# via the SBOM's CPEs, guarded by a known-CVE canary) plus a Trivy filesystem
-# scan (secrets/artifacts), publishes per-arch tags to GHCR,
-# keyless-signs them and attaches a CycloneDX SBOM + SLSA build-provenance
-# attestation (cosign + GitHub OIDC), and stitches multi-arch + :latest manifest
-# lists (signing each index).
+# via the SBOM's CPEs, guarded by a known-CVE canary) plus a Trivy secret scan
+# (Trivy cannot see Nix packages, so it is not a vulnerability scanner here), pushes each per-arch image to GHCR by digest,
+# keyless-signs it and attaches a CycloneDX SBOM + SLSA build-provenance
+# attestation (cosign + GitHub OIDC), verifies all of that, and only THEN moves
+# the per-arch tag onto the digest — so a documented tag never points at an
+# unsigned image. The manifest job stitches multi-arch + :latest manifest lists
+# from those verified digests, per image:tag pair, under the same discipline
+# (each index is staged, signed and verified before its real tag moves): a leg
+# that did not finish holds back only its own lists, never the whole refresh.
 # The build matrix and the :latest mapping come straight from the flake
 # (.#ciMatrix / .#latestTags), so adding an image module needs no workflow changes.
 # Pull requests build only the images their diff touches (fail-open — any shared
 # or unrecognized input means the full matrix); push/dispatch always build
-# everything, so publishes are never scoped. The weekly CVE-refresh rebuild
-# lives in bump-lock.yml, which commits a flake.lock bump to main and then
-# dispatches this workflow — so every published image is built from a lock
-# that exists in a commit, and the SLSA provenance sha reproduces the build.
-# A shared Cachix cache holds the from-source musl builds so later runs (and the
-# e2e workflow) pull them instead of recompiling.
+# everything, so publishes are never scoped. Publishing is main-only: push is
+# filtered to main and the setup job refuses a workflow_dispatch from any other
+# ref, so the signing identity is always build.yml@refs/heads/main. The weekly
+# CVE-refresh rebuild lives in bump-lock.yml, which commits a flake.lock bump
+# to main and then dispatches this workflow — so every published image is built
+# from a lock that exists in a commit, and the SLSA provenance sha reproduces
+# the build. A shared Cachix cache holds the from-source musl builds so later
+# runs (and the e2e workflow, which workflow_run-chains off every successful
+# main build — a partial publish ends red and is not chained) pull them
+# instead of recompiling.
 
 on:
   push:
@@ -45,19 +53,18 @@ on:
       - ".github/canary/**"
   workflow_dispatch:
 
+# Workflow-level default is read-only; each job below grants only what it
+# uses (a job-level block replaces the whole set, so the default still covers
+# any job that declares none).
 permissions:
   contents: read
-  packages: write
-  security-events: write
-  id-token: write # keyless cosign signing + SBOM attestation (GitHub OIDC)
-  actions: read # let codeql-action read this run for its telemetry call
-  attestations: write # SLSA build-provenance attestation
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   # Cancel superseded PR runs, but never a half-done main publish: cancelling
-  # mid-run skips the manifest job and leaves GHCR with per-arch tags but no
-  # multi-arch/latest/alias manifest lists.
+  # mid-run leaves GHCR with per-arch tags already moved to this week's
+  # digests while the multi-arch/latest/alias manifest lists still point at
+  # last week's (or, on a first publish, don't exist at all).
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
@@ -67,12 +74,32 @@ jobs:
   setup:
     name: compute matrix
     runs-on: ubuntu-latest
+    permissions:
+      contents: read # gh api …/pulls/N/files works read-only on a public repo
     outputs:
       matrix: ${{ steps.gen.outputs.matrix }}
       latest: ${{ steps.gen.outputs.latest }}
       aliases: ${{ steps.gen.outputs.aliases }}
     steps:
-      - uses: actions/checkout@v5
+      # Publishing is gated on the event type below, so a dispatch from a
+      # feature branch would otherwise build AND publish that branch (with a
+      # valid keyless signature naming that ref) and re-point :latest — and,
+      # keyed on github.ref, it would not even serialize against a main run.
+      # Fail red here rather than silently skip: a mistaken dispatch should be
+      # visible, not a green run that published nothing.
+      - name: Refuse a dispatch from any ref but main
+        if: github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main'
+        env:
+          REF: ${{ github.ref }}
+        run: |
+          echo "::error::build.yml publishes to GHCR — dispatch it from main only (got ${REF})"
+          exit 1
+      # Every checkout here is SHA-pinned and drops the GITHUB_TOKEN from
+      # .git/config (persist-credentials: false): no job pushes via git, and
+      # the build job runs unsandboxed Nix apps + docker from the checkout.
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
       # `determinate: false` -> plain upstream Nix. The v22 default installs
       # Determinate Nix and tries a FlakeHub login on every job, which warns
       # ("determinate-nixd failed with exit code 1") since we don't use FlakeHub.
@@ -116,6 +143,9 @@ jobs:
               images/*)     full "unrecognized file under images/: $f" ;;
               lib/*|flake.nix|flake.lock|.github/workflows/build.yml)
                             full "shared build input changed: $f" ;;
+              # The grype canary fixture gates every job, so exercise it on
+              # every image.
+              .github/canary/*) full "scanner canary changed: $f" ;;
               # Anything else (docs, examples, site — mixed PRs) doesn't feed
               # the image builds; the path filter alone can't tell us this
               # because it only says *some* listed path changed.
@@ -123,8 +153,9 @@ jobs:
             esac
           done <<< "$files"
           images=$(printf '%s' "$images" | sort -u)
-          # Empty set shouldn't happen (the pull_request path filter means at
-          # least one build input changed), but never emit an empty matrix.
+          # Empty set means only non-module inputs changed (the pull_request
+          # path filter is broader than the case above); never emit an empty
+          # matrix.
           [ -n "$images" ] || full "no image modules in the diff"
           list=$(printf '%s' "$images" | tr '\n' ' ')
           echo "scoped to images: $list"
@@ -138,6 +169,10 @@ jobs:
           # push/dispatch (step skipped) and whenever scoping chose the full
           # matrix.
           SCOPED: ${{ steps.scope.outputs.images }}
+        # `shell: bash` -> `bash -eo pipefail`: without pipefail a failed
+        # `nix eval` piped into jq yields an empty matrix that only blows up
+        # later, as an opaque fromJSON error in the build job.
+        shell: bash
         run: |
           # Cross each {image,tag,attr,sbomName} with the two native arches.
           # `heavy` marks the from-source musl builds (jre's OpenJDK bootstrap,
@@ -152,6 +187,7 @@ jobs:
             | $i + {arch:$a.name, runner:$a.runner,
                     heavy: (($i.image == "jre" or $i.image == "php") and ($i.tag | endswith("-musl")))}
           ]}')
+          [ -n "$matrix" ] || { echo "ciMatrix evaluation produced no matrix" >&2; exit 1; }
           # Apply the PR scope, if any. Guard against the filter matching
           # nothing (e.g. a PR that only *deletes* an image module scopes to a
           # name the flake no longer knows): GitHub errors on an empty matrix,
@@ -168,7 +204,9 @@ jobs:
           fi
           echo "matrix jobs: $(printf '%s' "$matrix" | jq '.include | length')"
           # latest/aliases stay unscoped on purpose: only the manifest job
-          # consumes them, and it never runs on pull_request.
+          # consumes them, and it never runs on pull_request. latestTags
+          # throws on a `latest` that names no variant, so a typo fails here,
+          # not in the manifest job after every leg has built.
           latest=$(nix eval --json .#latestTags)
           aliases=$(nix eval --json .#imageAliases)
           {
@@ -181,6 +219,18 @@ jobs:
     name: ${{ matrix.image }}:${{ matrix.tag }} (${{ matrix.arch }})
     needs: setup
     runs-on: ${{ matrix.runner }}
+    # Job-level permissions are static per job, so pull_request runs of this
+    # job carry the publish scopes too even though every publish step is
+    # `if:`-gated off. Fork PRs already get a read-only token without OIDC
+    # (GitHub policy); closing the residual for same-repo PRs would mean a
+    # separate PR-only build job — accepted as-is.
+    permissions:
+      contents: read
+      packages: write
+      security-events: write # SARIF upload to the Security tab
+      id-token: write # keyless cosign signing + SBOM attestation (GitHub OIDC)
+      actions: read # let codeql-action read this run for its telemetry call
+      attestations: write # SLSA build-provenance attestation
     # Cached builds finish in minutes; the ceiling exists for cache-cold musl
     # compiles (icu, erlang, postgres) while still cutting off wedged runners
     # well before the 6h default. The `heavy` entries (musl jre/php — flagged
@@ -192,13 +242,15 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJSON(needs.setup.outputs.matrix) }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
       - uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
         with:
           determinate: false # no FlakeHub login attempt (see setup job)
       # Shared binary cache: the first run compiles the from-source musl variants
-      # (node/nginx/redis, and everything on aarch64-musl); every run after that
-      # pulls them instead of recompiling. Public cache -> anonymous reads work
+      # (none are in the public Nix cache; jre/php are the `heavy` ones); every
+      # run after that pulls them instead of recompiling. Public cache -> anonymous reads work
       # (fork PRs, end users); pushing needs the CACHIX_AUTH_TOKEN secret.
       # Timeouts don't cost cache progress: v17 defaults to daemon mode
       # (useDaemon: true), where a Nix post-build hook hands each store path to
@@ -219,7 +271,9 @@ jobs:
           ATTR: ${{ matrix.attr }}
         run: nix build -L ".#${ATTR}"
 
-      - name: Generate SBOM (full closure incl. system packages)
+      # syft reads the built tarball (see buildSbomApp in lib/default.nix), so
+      # this needs nothing beyond `result` — no store closure to realise.
+      - name: "Generate SBOM (from the image: system packages + runtime)"
         env:
           SBOM: ${{ matrix.sbomName }}
         run: nix run ".#${SBOM}" -- sbom.cdx.json
@@ -269,15 +323,17 @@ jobs:
             '(.runs[0].results[]?.locations[]?.physicalLocation.artifactLocation.uri) |= (if . == "" then $uri else . end)' \
             grype-sbom.sarif > grype-sbom.sarif.tmp && mv grype-sbom.sarif.tmp grype-sbom.sarif
 
-      - name: "Trivy: image filesystem (app artifacts, secrets, misconfig)"
-        env:
-          # Only for trivy's vulnerability-DB pulls from ghcr.io (anonymous
-          # pulls hit GHCR rate limits); scoped to this step on purpose.
-          TRIVY_USERNAME: ${{ github.actor }}
-          TRIVY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+      - name: "Trivy: secrets in the image filesystem"
         run: |
+          # Secrets only. Trivy finds vulnerabilities through a distro package
+          # database (apk/dpkg/rpm) or language lockfiles, and has no Nix
+          # support and no CPE matching — on a varde image its vuln scanner
+          # reports 0 no matter what ships (checked 2026-10-17 against
+          # varde-postgres:17, where grype finds 40 matches). Running it as a
+          # vuln scanner here would only publish that false "clean" to the
+          # Security tab; grype above is the vulnerability scan.
           nix run --inputs-from . nixpkgs-tools#trivy -- image --input result \
-            --format sarif --output trivy-image.sarif --severity HIGH,CRITICAL
+            --scanners secret --format sarif --output trivy-image.sarif
 
       # SARIF -> Security tab needs code scanning, which private repos only get
       # with GitHub Advanced Security. Keep it non-fatal so builds still publish;
@@ -288,7 +344,7 @@ jobs:
       - name: Upload SBOM SARIF
         if: ${{ !cancelled() && hashFiles('grype-sbom.sarif') != '' }}
         continue-on-error: true
-        uses: github/codeql-action/upload-sarif@v4
+        uses: github/codeql-action/upload-sarif@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
         with:
           sarif_file: grype-sbom.sarif
           category: sbom-${{ matrix.image }}-${{ matrix.tag }}-${{ matrix.arch }}
@@ -296,16 +352,20 @@ jobs:
       - name: Upload image SARIF
         if: ${{ !cancelled() && hashFiles('trivy-image.sarif') != '' }}
         continue-on-error: true
-        uses: github/codeql-action/upload-sarif@v4
+        uses: github/codeql-action/upload-sarif@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
         with:
           sarif_file: trivy-image.sarif
           category: image-${{ matrix.image }}-${{ matrix.tag }}-${{ matrix.arch }}
 
+      # overwrite: attempt 1's artifact survives into "re-run failed jobs", and
+      # upload-artifact v4+ 409s on a same-name re-upload — without it a leg
+      # that died anywhere after this step could never be re-run alone.
       - name: Upload SBOM artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: sbom-${{ matrix.image }}-${{ matrix.tag }}-${{ matrix.arch }}
           path: sbom.cdx.json
+          overwrite: true
 
       - name: Smoke test (image actually runs)
         env:
@@ -385,28 +445,38 @@ jobs:
           esac
 
       # One GHCR login for cosign and the provenance action (skopeo below uses
-      # --dest-creds directly and doesn't need it).
+      # --dest-creds directly and doesn't need it). Plain `docker login` from
+      # the preinstalled CLI rather than a third-party action: it writes the
+      # ~/.docker/config.json that cosign (go-containerregistry's default
+      # keychain) and attest-build-provenance read, and keeps a mutable-tag
+      # action out of the one job that holds the signing identity.
       - name: Log in to GHCR (signing + attestation)
         if: github.event_name != 'pull_request'
-        uses: docker/login-action@v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
+        run: printf '%s' "$TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
 
       # NOTE: Actions creates each GHCR package PRIVATE by default, even from a
       # public repo. After the first run, flip each varde-* package to Public
       # (and connect it to this repo) or anonymous `docker pull` returns 401.
       # See the README ("First publish, one-time step").
-      - name: Push per-arch image to GHCR
+      #
+      # Pushed UNTAGGED (skopeo's documented `<name>@@unknown-digest@@` form):
+      # blobs and manifest land in the repo addressed by digest only. The real
+      # per-arch tag is moved onto that digest in the last step of this job,
+      # after the signature and both attestations are attached AND verified —
+      # so whatever fails in between, the tag keeps pointing at its previous,
+      # already-signed digest. Previously the tag moved first: in run
+      # 33391537615 (2026-08-31) cosign's ambient-OIDC fetch then died and
+      # varde-node:22-musl-arm64 sat unsigned and unattested for a week.
+      - name: Push per-arch image to GHCR (by digest, untagged)
         if: github.event_name != 'pull_request'
         env:
           OWNER: ${{ github.repository_owner }}
           ACTOR: ${{ github.actor }}
           TOKEN: ${{ secrets.GITHUB_TOKEN }}
           IMAGE: ${{ matrix.image }}
-          TAG: ${{ matrix.tag }}
-          ARCH: ${{ matrix.arch }}
         run: |
           owner=$(echo "$OWNER" | tr '[:upper:]' '[:lower:]')
           img="${REGISTRY}/${owner}/varde-${IMAGE}"
@@ -419,7 +489,7 @@ jobs:
             --digestfile "$dgst" \
             --dest-creds "${ACTOR}:${TOKEN}" \
             docker-archive:result \
-            "docker://${img}:${TAG}-${ARCH}"
+            "docker://${img}@@unknown-digest@@"
           # Hand the exact pushed image name + digest to the signing/attest steps.
           digest=$(cat "$dgst")
           {
@@ -436,8 +506,16 @@ jobs:
       - name: Sign image + attach SBOM attestation (cosign, keyless)
         if: github.event_name != 'pull_request'
         run: |
-          nix run --inputs-from . nixpkgs-tools#cosign -- sign --yes "$IMAGE_REF"
-          nix run --inputs-from . nixpkgs-tools#cosign -- attest --yes --type cyclonedx --predicate sbom.cdx.json "$IMAGE_REF"
+          # Built once from the pinned tools input; the verify step below
+          # reuses it from PATH.
+          nix build --inputs-from . nixpkgs-tools#cosign -o "$RUNNER_TEMP/cosign"
+          echo "$RUNNER_TEMP/cosign/bin" >> "$GITHUB_PATH"
+          # The ambient OIDC token fetch is occasionally flaky (the 2026-08-31
+          # failure was it returning non-JSON); three attempts, 10s/20s apart.
+          # Both commands are idempotent on retry (same digest, new bundle).
+          retry(){ local n=1; until "$@"; do [ "$n" -ge 3 ] && return 1; sleep $((n * 10)); n=$((n + 1)); done; }
+          retry "$RUNNER_TEMP/cosign/bin/cosign" sign --yes "$IMAGE_REF"
+          retry "$RUNNER_TEMP/cosign/bin/cosign" attest --yes --type cyclonedx --predicate sbom.cdx.json "$IMAGE_REF"
 
       # SLSA build-provenance attestation (structured: builder, source commit,
       # invocation) on the same per-arch digest, pushed to GHCR as a referrer so
@@ -450,31 +528,131 @@ jobs:
           subject-digest: ${{ env.IMAGE_DIGEST }}
           push-to-registry: true
 
+      # Gate the tag move on what consumers actually run. Exact identity, not
+      # a repo-wide regexp: GITHUB_WORKFLOW_REF is
+      # <owner>/<repo>/.github/workflows/build.yml@refs/heads/main (publishing
+      # is main-only, see the setup job), which is precisely the certificate
+      # identity keyless signing put in the Fulcio cert. The provenance check
+      # is the README's `gh attestation verify` (gh is preinstalled and reads
+      # the docker login above); --bundle-from-oci makes it read the referrer
+      # the attest step pushed to GHCR — the copy consumers verify against —
+      # not the one in the GitHub attestations API.
+      - name: Verify signature + SBOM + provenance before the tag moves
+        if: github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cosign verify \
+            --certificate-identity "https://github.com/${GITHUB_WORKFLOW_REF}" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            "$IMAGE_REF" >/dev/null
+          cosign verify-attestation --type cyclonedx \
+            --certificate-identity "https://github.com/${GITHUB_WORKFLOW_REF}" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            "$IMAGE_REF" >/dev/null
+          gh attestation verify "oci://${IMAGE_REF}" \
+            --repo "$GITHUB_REPOSITORY" \
+            --cert-identity "https://github.com/${GITHUB_WORKFLOW_REF}" \
+            --bundle-from-oci
+          echo "verified: signature + cyclonedx attestation + SLSA provenance on $IMAGE_REF"
+
+      # Every blob already exists in the repo, so this is one manifest PUT:
+      # the tag flips atomically from its previous (signed) digest to this one.
+      # --preserve-digests makes skopeo fail rather than re-encode the
+      # manifest, so the tag resolves to the exact digest just verified.
+      - name: Publish per-arch tag (manifest-only copy of the verified digest)
+        if: github.event_name != 'pull_request'
+        env:
+          ACTOR: ${{ github.actor }}
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IMAGE: ${{ matrix.image }}
+          TAG: ${{ matrix.tag }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          conf="$(mktemp)"; printf 'unqualified-search-registries = []\n' > "$conf"
+          export CONTAINERS_REGISTRIES_CONF="$conf"
+          nix run --inputs-from . nixpkgs-tools#skopeo -- --insecure-policy copy \
+            --preserve-digests \
+            --src-creds "${ACTOR}:${TOKEN}" --dest-creds "${ACTOR}:${TOKEN}" \
+            "docker://${IMAGE_REF}" \
+            "docker://${IMAGE_NAME}:${TAG}-${ARCH}"
+          echo "published ${IMAGE_NAME}:${TAG}-${ARCH} -> ${IMAGE_DIGEST}"
+          # Hand the digest to the manifest job. This file exists only when
+          # the leg is fully signed, attested, verified and tagged — the
+          # manifest job stitches lists only for image:tag pairs whose BOTH
+          # arches got here.
+          mkdir -p "$RUNNER_TEMP/pushed"
+          printf '%s' "$IMAGE_DIGEST" > "$RUNNER_TEMP/pushed/${IMAGE}.${TAG}.${ARCH}"
+
+      # One file per leg (unique name, so the manifest job's merged download
+      # cannot clobber); overwrite so "re-run failed jobs" can re-upload. The
+      # 7-day retention (one weekly cadence) is what keeps that re-run viable:
+      # the manifest job re-plans from the SURVIVING legs' digest files, so
+      # once they expire every list is held back and only a fresh dispatch
+      # from main recovers (see the README's publish checklist).
+      - name: Record the published digest for the manifest job
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: pushed-${{ matrix.image }}-${{ matrix.tag }}-${{ matrix.arch }}
+          path: ${{ runner.temp }}/pushed/*
+          retention-days: 7
+          overwrite: true
+
   manifest:
     name: multi-arch manifests
     needs: [setup, build]
-    if: github.event_name != 'pull_request'
+    # `always()` rather than the default success gate or `!cancelled()`: with
+    # ~78 fail-fast:false legs, one failed or timed-out leg used to skip this
+    # whole job — three of eight recent weekly runs (31365351957, 32002559473,
+    # 33391537615) published fresh per-arch tags and refreshed no list at all,
+    # so :latest kept last week's CVEs. Timed-out legs report `cancelled`
+    # (32002559473 had ten, zero failures, run conclusion "cancelled"), which a
+    # `!cancelled()` gate would still skip on. Running unconditionally is safe
+    # because the plan below only stitches image:tag pairs whose BOTH arches
+    # finished sign+attest+verify+tag (their digest file arrived), and the run
+    # still goes red at the end if any pair was held back. main-only as
+    # belt-and-braces to the setup job's dispatch check.
+    if: always() && github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && needs.setup.result == 'success'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write # keyless cosign signing of the indexes
+      actions: read # download-artifact (the per-leg digest files)
     steps:
       # Checkout gives `--inputs-from .` the repo's flake.lock to resolve the
       # pinned `nixpkgs-tools` input from.
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
       - uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22 (for `nix build --inputs-from . nixpkgs-tools#cosign`)
         with:
           determinate: false # no FlakeHub login attempt (see setup job)
       - name: Log in to GHCR
-        uses: docker/login-action@v4
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
+        run: printf '%s' "$TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
+      # One `<image>.<tag>.<arch>` digest file per leg that fully published;
+      # a leg that failed anywhere before its tag moved uploaded nothing.
+      - name: Collect the digests the build legs published
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          pattern: pushed-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/pushed
 
-      # cosign runs once per unique digest below; build it once from the pinned
-      # tools input instead of paying a `nix run` evaluation per signature.
-      - name: Install cosign (pinned via flake.lock)
+      # cosign runs once per unique digest below, skopeo once per tag and oras
+      # once per alias child; build each once from the pinned tools input
+      # instead of paying a `nix run` evaluation per invocation. (oras reads
+      # the docker login above for its credentials, like cosign and gh.)
+      - name: Install cosign + skopeo + oras (pinned via flake.lock)
         run: |
           nix build --inputs-from . nixpkgs-tools#cosign -o "$RUNNER_TEMP/cosign"
-          echo "$RUNNER_TEMP/cosign/bin" >> "$GITHUB_PATH"
+          nix build --inputs-from . nixpkgs-tools#skopeo -o "$RUNNER_TEMP/skopeo"
+          nix build --inputs-from . nixpkgs-tools#oras -o "$RUNNER_TEMP/oras"
+          { echo "$RUNNER_TEMP/cosign/bin"; echo "$RUNNER_TEMP/skopeo/bin"; echo "$RUNNER_TEMP/oras/bin"; } >> "$GITHUB_PATH"
 
       - name: Assemble manifest lists (libc tags, bare/latest aliases, image aliases)
         env:
@@ -482,32 +660,70 @@ jobs:
           MATRIX: ${{ needs.setup.outputs.matrix }}
           LATEST: ${{ needs.setup.outputs.latest }}
           ALIASES: ${{ needs.setup.outputs.aliases }}
+          ACTOR: ${{ github.actor }}
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }} # `gh attestation verify` on the alias children
+        # bash -eo pipefail: a jq failure inside the `printf | jq | while`
+        # plan pipelines must fail the step, not silently shrink the plan.
+        shell: bash
         run: |
           owner=$(echo "$OWNER" | tr '[:upper:]' '[:lower:]'); reg="${REGISTRY}"
           imgref(){ echo "${reg}/${owner}/varde-$1"; }
           hastag(){ printf '%s' "$MATRIX" | jq -e --arg im "$1" --arg t "$2" \
             '.include[]|select(.image==$im and .tag==$t)' >/dev/null; }
+          # Digest the build leg <image> <tag> <arch> published this run —
+          # empty if that leg did not get as far as moving its tag.
+          dgst(){ cat "$RUNNER_TEMP/pushed/$1.$2.$3" 2>/dev/null || true; }
 
-          # Three phases: plan (serial, cheap) -> create (parallel: every list
-          # is assembled from per-arch tags, so no list depends on another) ->
-          # sign (deduplicated: bare-version, :latest, and alias tags assemble
-          # byte-identical indexes, so one keyless signature per repo@digest
-          # covers them all — cosign signs the digest, and `cosign verify <tag>`
-          # resolves the tag to that digest first). Per-arch SBOM attestations
-          # live on the child digests, attached in the build job.
+          # Five phases: plan (serial, cheap) -> create (parallel: every list
+          # is assembled from this run's per-arch DIGESTS — immutable, unlike
+          # the per-arch tags — so no list depends on another; each lands
+          # under a staging tag, never the real one) -> copy + verify the
+          # per-arch referrers into the alias repos (see create_one) -> sign +
+          # verify (deduplicated: bare-version, :latest, and alias tags
+          # assemble byte-identical indexes, so one keyless signature per
+          # repo@digest covers them all — cosign signs the digest, and `cosign
+          # verify <tag>` resolves the tag to that digest first) -> move the
+          # real tags onto the verified digests (parallel). Per-arch
+          # signatures and SBOM/provenance attestations live on the child
+          # digests, attached in the build job.
+          #
+          # plan <target tag> <source image> <source tag>: a pair whose amd64 or
+          # arm64 leg did not finish is recorded, not planned — its list keeps
+          # last week's digest rather than mixing arches of different ages —
+          # and the step fails at the end so the held-back tags are visible.
+          # Which libc a bare/:latest tag follows is decided from $MATRIX (what
+          # this run set out to build), never from which digests arrived:
+          # otherwise a week where the musl legs time out would silently
+          # re-point the default tags at glibc.
           planfile="$RUNNER_TEMP/manifest-plan"
-          : > "$planfile"
-          plan(){ printf '%s %s %s\n' "$1" "$2" "$3" >> "$planfile"; }
+          skipfile="$RUNNER_TEMP/manifest-skipped"
+          : > "$planfile"; : > "$skipfile"
+          plan(){
+            local src amd arm
+            src=$(imgref "$2"); amd=$(dgst "$2" "$3" amd64); arm=$(dgst "$2" "$3" arm64)
+            if [ -z "$amd" ] || [ -z "$arm" ]; then echo "$1" >> "$skipfile"; return 0; fi
+            printf '%s %s@%s %s@%s\n' "$1" "$src" "$amd" "$src" "$arm" >> "$planfile"
+          }
+          fail_skipped(){
+            sort -u "$skipfile" -o "$skipfile"
+            echo "::error::manifest lists NOT refreshed (a build leg did not finish, or this is a re-run older than the 7-day digest-artifact retention — then dispatch a fresh build from main; per-arch tags of the legs that did finish are already current): $(tr '\n' ' ' < "$skipfile")"
+            { echo "## Manifest lists not refreshed"; echo; sed 's/^/- /' "$skipfile"; } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          }
 
           # 1) One multi-arch list per image:matrix-tag (concrete libc-qualified or
           #    plain-'latest' tags, e.g. jre:21-musl, redis:latest-glibc, static:latest).
           printf '%s' "$MATRIX" | jq -r '.include[]|"\(.image) \(.tag)"' | sort -u \
           | while read -r image tag; do
-              i=$(imgref "$image"); plan "${i}:${tag}" "${i}:${tag}-amd64" "${i}:${tag}-arm64"
+              i=$(imgref "$image"); plan "${i}:${tag}" "$image" "$tag"
             done
 
           # 2) For libc-axis images (tags carry -musl/-glibc): bare-version aliases to
           #    the default libc (musl if built, else glibc), plus :latest / :latest-glibc.
+          #    latestTags is validated in the flake, but resolve `latest` to a built
+          #    tag or fail rather than plan from a tag that may only exist in GHCR
+          #    from an earlier publish.
           for image in $(printf '%s' "$MATRIX" | jq -r '[.include[].image]|unique[]'); do
             has_libc=$(printf '%s' "$MATRIX" | jq -r --arg im "$image" \
               '[.include[]|select(.image==$im)|.tag]|any(test("-(musl|glibc)$"))')
@@ -517,14 +733,16 @@ jobs:
               | sed -E 's/-(musl|glibc)$//' | sort -u \
               | while read -r ver; do
                   if hastag "$image" "${ver}-musl"; then d=musl; else d=glibc; fi
-                  plan "${i}:${ver}" "${i}:${ver}-${d}-amd64" "${i}:${ver}-${d}-arm64"
+                  plan "${i}:${ver}" "$image" "${ver}-${d}"
                 done
             lv=$(printf '%s' "$LATEST" | jq -r --arg im "$image" '.[$im] // empty')
             [ -n "$lv" ] || continue
-            if hastag "$image" "${lv}-musl"; then d=musl; else d=glibc; fi
-            plan "${i}:latest" "${i}:${lv}-${d}-amd64" "${i}:${lv}-${d}-arm64"
+            if hastag "$image" "${lv}-musl"; then d=musl
+            elif hastag "$image" "${lv}-glibc"; then d=glibc
+            else echo "latestTags[$image]=$lv names no built tag" >&2; exit 1; fi
+            plan "${i}:latest" "$image" "${lv}-${d}"
             if hastag "$image" "${lv}-glibc"; then
-              plan "${i}:latest-glibc" "${i}:${lv}-glibc-amd64" "${i}:${lv}-glibc-arm64"
+              plan "${i}:latest-glibc" "$image" "${lv}-glibc"
             fi
           done
 
@@ -534,17 +752,18 @@ jobs:
           #    and would let an arbitrary tag win if a source ever grew a second one.
           printf '%s' "$ALIASES" | jq -r 'to_entries[]|"\(.key) \(.value)"' \
           | while read -r alias src; do
-              a=$(imgref "$alias"); si=$(imgref "$src")
+              a=$(imgref "$alias")
               for t in $(printf '%s' "$MATRIX" | jq -r --arg s "$src" \
                   '.include[]|select(.image==$s)|.tag' | sort -u); do
-                plan "${a}:${t}" "${si}:${t}-amd64" "${si}:${t}-arm64"
+                plan "${a}:${t}" "$src" "$t"
               done
               lv=$(printf '%s' "$LATEST" | jq -r --arg im "$src" '.[$im] // empty')
               [ -n "$lv" ] || continue
               if hastag "$src" "$lv"; then sfx="$lv"                  # plain tag (static:latest)
               elif hastag "$src" "${lv}-musl"; then sfx="${lv}-musl"  # default libc
-              else sfx="${lv}-glibc"; fi
-              plan "${a}:latest" "${si}:${sfx}-amd64" "${si}:${sfx}-arm64"
+              elif hastag "$src" "${lv}-glibc"; then sfx="${lv}-glibc"
+              else echo "latestTags[$src]=$lv names no built tag" >&2; exit 1; fi
+              plan "${a}:latest" "$src" "$sfx"
             done
 
           # Identical replans (e.g. redis:latest is both a matrix tag and the
@@ -552,41 +771,140 @@ jobs:
           # planned with DIFFERENT children would be a generator bug — fail
           # loudly rather than race two writers in the parallel phase.
           sort -u "$planfile" -o "$planfile"
-          [ -s "$planfile" ] || { echo "empty manifest plan" >&2; exit 1; }
+          [ -s "$planfile" ] || { [ -s "$skipfile" ] && fail_skipped; echo "empty manifest plan" >&2; exit 1; }
           dups=$(awk '{print $1}' "$planfile" | sort | uniq -d)
           [ -z "$dups" ] || { echo "conflicting manifest plans for: $dups" >&2; exit 1; }
 
+          # Same discipline as the per-arch tags: the real tag moves only after
+          # the index it will point at is signed AND verified. imagetools
+          # cannot push an index untagged, so each lands under a fixed staging
+          # name (<real tag>-staging — simply overwritten every run, so nothing
+          # accumulates and nothing needs deleting; in GHCR a package version
+          # IS the digest, so deleting a staging tag's version would delete the
+          # index the real tag was just moved onto). Until the move phase the
+          # documented tags keep resolving to last week's signed indexes.
+          #
+          # For an alias (target repo != source repo, e.g. varde-go from
+          # varde-static's digests) imagetools also copies the two child
+          # manifests cross-repo — but nothing else: the per-arch signature,
+          # SBOM and SLSA bundles the build job attached are OCI referrers of
+          # the child in the SOURCE repo, so `cosign verify-attestation
+          # varde-go@<child>` found nothing (the README's per-digest recipe
+          # failed for aliases). Record each such child so the next phase
+          # copies its referrers alongside.
           create_one(){
-            docker buildx imagetools create -t "$1" "$2" "$3"
-            d=$(docker buildx imagetools inspect "$1" --format '{{.Manifest.Digest}}')
-            printf '%s@%s\n' "${1%:*}" "$d" >> "$SIGNLIST"
+            docker buildx imagetools create -t "${1}-staging" "$2" "$3"
+            d=$(docker buildx imagetools inspect "${1}-staging" --format '{{.Manifest.Digest}}')
+            printf '%s@%s %s\n' "${1%:*}" "$d" "$1" >> "$MOVELIST"
+            if [ "${1%:*}" != "${2%@*}" ]; then
+              printf '%s %s@%s\n' "$2" "${1%:*}" "${2#*@}" >> "$COPYLIST"
+              printf '%s %s@%s\n' "$3" "${1%:*}" "${3#*@}" >> "$COPYLIST"
+            fi
           }
           export -f create_one
-          export SIGNLIST="$RUNNER_TEMP/sign-list"
-          : > "$SIGNLIST"
+          export MOVELIST="$RUNNER_TEMP/move-list" COPYLIST="$RUNNER_TEMP/copy-list"
+          : > "$MOVELIST"; : > "$COPYLIST"
           xargs -P 8 -n 3 bash -c 'set -euo pipefail; create_one "$@"' _ < "$planfile"
 
-          sort -u "$SIGNLIST" -o "$SIGNLIST"
-          echo "created $(wc -l < "$planfile") manifest lists; signing $(wc -l < "$SIGNLIST") unique digests"
+          # Copy each alias child's referrers (cosign signature bundle,
+          # CycloneDX attestation bundle, SLSA provenance bundle) from the
+          # source repo into the alias repo, then gate on the same three
+          # checks the build job runs before a per-arch tag moves — now
+          # against the ALIAS repo, so the copy is exercised, not assumed.
+          # `oras cp -r` copies the manifest plus all its referrers (GHCR
+          # keeps them under the referrers-tag fallback, which oras handles);
+          # the destination is the bare repo, so the child lands by digest
+          # with no tag. `cosign copy` is NOT a substitute: it does not carry
+          # the referrer bundles cosign 3.x / attest-build-provenance push
+          # (tried: the alias still failed `cosign verify` afterwards).
+          # Deduplicated (`:latest` and `:<tag>` of an alias share children)
+          # so no two writers race on one child's referrers index; idempotent
+          # on re-run, like the rest of this job. `-r` on the xargs below: the
+          # list is empty when no alias pair was planned (every source leg held
+          # back), and GNU xargs would otherwise run copy_one once with no
+          # arguments and kill the whole refresh.
+          copy_one(){
+            oras cp -r "$1" "${2%@*}"
+            cosign verify \
+              --certificate-identity "https://github.com/${GITHUB_WORKFLOW_REF}" \
+              --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+              "$2" >/dev/null
+            cosign verify-attestation --type cyclonedx \
+              --certificate-identity "https://github.com/${GITHUB_WORKFLOW_REF}" \
+              --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+              "$2" >/dev/null
+            gh attestation verify "oci://$2" \
+              --repo "$GITHUB_REPOSITORY" \
+              --cert-identity "https://github.com/${GITHUB_WORKFLOW_REF}" \
+              --bundle-from-oci
+            echo "verified: signature + cyclonedx attestation + SLSA provenance on $2 (copied from $1)"
+          }
+          export -f copy_one
+          sort -u "$COPYLIST" -o "$COPYLIST"
+          xargs -r -P 4 -n 2 bash -c 'set -euo pipefail; copy_one "$@"' _ < "$COPYLIST" \
+            || { echo "::error::an alias child is missing its signature/attestations — no manifest tag was moved; re-run this job"; exit 1; }
+
+          SIGNLIST="$RUNNER_TEMP/sign-list"
+          awk '{print $1}' "$MOVELIST" | sort -u > "$SIGNLIST"
+          echo "staged $(wc -l < "$planfile") manifest lists; copied referrers for $(wc -l < "$COPYLIST") alias children; signing $(wc -l < "$SIGNLIST") unique digests; $(wc -l < "$skipfile") held back"
 
           # cosign 3.x signs OCI indexes via the OCI-1.1 referrers flow, and as
           # of 2026-07-02 GHCR answers the referrers-API housekeeping GET with a
           # redirect to a github.com page that 403s for the CI token — AFTER the
           # signature bundle and Rekor entry have already landed (verified with
           # `cosign verify` against each "failed" run). The per-arch signs in
-          # the build job are unaffected (skopeo pushes Docker-type manifests,
-          # which take cosign's legacy tag path). Gate on what consumers
+          # the build job have not shown it, though they push the same kind
+          # of referrer bundles (GHCR holds no legacy `.sig`/`.att` tags for
+          # either) — the difference is not understood. Gate on what consumers
           # actually run — `cosign verify` — instead of cosign's exit code:
           # a spurious housekeeping error passes, a missing signature fails.
+          # Hence sign -> verify -> (only if verify says missing) re-sign, up
+          # to three attempts 10s/20s apart: the known 403-after-success case
+          # never re-signs (which would push a bundle + Rekor entry per
+          # attempt), while a genuinely missing signature — the ambient OIDC
+          # fetch is occasionally flaky, see the build job — is retried.
+          # Exact identity (this workflow file at refs/heads/main), the same
+          # one the build job verifies against and the README documents.
           sign_one(){
-            cosign sign --yes "$1" && return 0
-            echo "cosign sign exited nonzero for $1 — checking whether the signature actually landed"
-            cosign verify \
-              --certificate-identity-regexp "^https://github.com/${GITHUB_REPOSITORY}/" \
-              --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-              "$1" >/dev/null 2>&1 && { echo "verified: $1 is signed despite the sign error"; return 0; }
-            echo "signature for $1 is genuinely missing" >&2
-            return 1
+            local n=1
+            while :; do
+              cosign sign --yes "$1" \
+                || echo "cosign sign exited nonzero for $1 (attempt $n) — checking whether the signature actually landed"
+              cosign verify \
+                --certificate-identity "https://github.com/${GITHUB_WORKFLOW_REF}" \
+                --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+                "$1" >/dev/null 2>&1 && { echo "verified: $1"; return 0; }
+              [ "$n" -ge 3 ] && { echo "signature for $1 is genuinely missing after $n attempts" >&2; return 1; }
+              sleep $((n * 10)); n=$((n + 1))
+            done
           }
           export -f sign_one
-          xargs -P 4 -n 1 bash -c 'set -euo pipefail; sign_one "$@"' _ < "$SIGNLIST"
+          # xargs still runs every remaining sign after one fails (only exit
+          # 255 stops it) and then exits nonzero — so no real tag moves at all
+          # while any index is unsigned. Re-running just this job recovers:
+          # the staged indexes and their signatures are idempotent.
+          xargs -P 4 -n 1 bash -c 'set -euo pipefail; sign_one "$@"' _ < "$SIGNLIST" \
+            || { echo "::error::an index signature is missing — no manifest tag was moved; re-run this job"; exit 1; }
+
+          # Every blob and child manifest already exists in the repo, so each
+          # move is one manifest PUT (index-only, no children copied): the tag
+          # flips atomically from its previous signed index to this one, and
+          # --preserve-digests makes skopeo fail rather than re-encode, so the
+          # tag resolves to the exact digest just verified. (registries.conf
+          # override: see the build job's push step.)
+          conf="$(mktemp)"; printf 'unqualified-search-registries = []\n' > "$conf"
+          export CONTAINERS_REGISTRIES_CONF="$conf"
+          move_one(){
+            skopeo --insecure-policy copy --multi-arch index-only --preserve-digests \
+              --src-creds "${ACTOR}:${TOKEN}" --dest-creds "${ACTOR}:${TOKEN}" \
+              "docker://$1" "docker://$2"
+            echo "published $2 -> ${1#*@}"
+          }
+          export -f move_one
+          xargs -P 8 -n 2 bash -c 'set -euo pipefail; move_one "$@"' _ < "$MOVELIST"
+
+          # Every complete pair is now refreshed, signed and tagged; if any pair
+          # was held back, say which and go red — the run must not look green
+          # while :latest still carries last week's CVEs.
+          [ -s "$skipfile" ] && fail_skipped
+          echo "every planned manifest list refreshed"

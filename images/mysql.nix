@@ -34,7 +34,7 @@
 # Runtime notes for a bare rootfs:
 #   - datadir=/app/data; socket + pid file under sticky /tmp (there is no
 #     /run/mysqld, the compiled default socket dir).
-#   - bind-address=0.0.0.0 (reachable when published), port 3306.
+#   - bind-address=* (both IPv4 and IPv6, reachable when published), port 3306.
 #   - mysqlx=OFF: no X-plugin port 33060 or extra socket to care for.
 #   - secure-file-priv=NULL: server-side import/export (LOAD DATA INFILE,
 #     SELECT ... INTO OUTFILE) disabled — the secure distroless default.
@@ -134,9 +134,14 @@ let
         pid-file = /tmp/mysqld.pid
         tmpdir = /tmp
 
-        # Container-sane defaults: reachable when published; no X-plugin port;
-        # no server-side file import/export; no reverse DNS on connect.
-        bind-address = 0.0.0.0
+        # Container-sane defaults: reachable when published on both address
+        # families — on IPv6-only or IPv6-preferred networks (Docker --ipv6,
+        # single-stack v6 Kubernetes) a v4-only 0.0.0.0 listener is
+        # unreachable; `*` (MySQL 8's own default, restated here so this file
+        # documents every default it owns) accepts both and falls back to
+        # v4-only where the container has no IPv6; no X-plugin port; no
+        # server-side file import/export; no reverse DNS on connect.
+        bind-address = *
         mysqlx = OFF
         secure-file-priv = NULL
         skip-name-resolve
@@ -158,7 +163,7 @@ let
 
       # SBOM: the pruned /runtime severed its reference to ${mysql} (above), so
       # the server would not be a named component in its own SBOM — and NVD
-      # files MySQL CVEs under vendor `oracle`, not the vendor=name CPE sbomnix
+      # files MySQL CVEs under vendor `oracle`, not the vendor=name CPE syft
       # would derive. Scan metadata only; never enters image contents.
       sbomExtraComponents = [
         (vardeLib.sbomComponent {

@@ -1,7 +1,7 @@
 // varde example: minimal Spring Boot (Gradle) build.
 // -----------------------------------------------------------------------------
-// Pinned versions (verified against Maven Central, June 2026):
-//   - org.springframework.boot ......... 4.1.0  (latest GA; supports Java 17-26)
+// Pinned versions (verified against Maven Central, September 2026):
+//   - org.springframework.boot ......... 4.1.1  (latest GA; supports Java 17-26)
 //   - io.spring.dependency-management .. 1.1.7  (latest)
 // Spring Boot 4.1 requires Gradle 8.14+ (or 9.x) and Java 17+, so the Java 21
 // toolchain below and the gradle:8.14-jdk21 builder image both satisfy it.
@@ -9,7 +9,7 @@ plugins {
     id 'java'
     // The Spring Boot plugin contributes the `bootJar` task (the self-contained
     // executable fat jar) and imports the Spring Boot dependencies BOM.
-    id 'org.springframework.boot' version '4.1.0'
+    id 'org.springframework.boot' version '4.1.1'
     // Applies the BOM so starters can be declared WITHOUT explicit versions.
     id 'io.spring.dependency-management' version '1.1.7'
 }
@@ -30,9 +30,11 @@ repositories {
 }
 
 dependencies {
-    // Web starter only — no Actuator, keeping the image minimal. The BOM
-    // (via the dependency-management plugin) manages the version, so none here.
-    implementation 'org.springframework.boot:spring-boot-starter-web'
+    // Web MVC starter only (renamed from spring-boot-starter-web in Spring Boot
+    // 4.0; the old name is a deprecated shim) — no Actuator, keeping the image
+    // minimal. The BOM (via the dependency-management plugin) manages the
+    // version, so none here.
+    implementation 'org.springframework.boot:spring-boot-starter-webmvc'
 }
 
 // `bootJar` is enabled automatically once the plugin finds a main class, and it

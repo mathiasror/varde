@@ -7,10 +7,11 @@
 #   scripts/e2e.sh node-express …  # run only the named example(s)
 #
 # The default bases are the MUSL variants (varde's default libc), so this also
-# proves the musl images build and run end to end. musl node/nginx/redis build
-# from source, so a full run can take a while. Failures are collected (the run
-# does not stop at the first one) and reported in a table; exit is non-zero if
-# any example failed to build, failed its smoke test, or exceeded its budget.
+# proves the musl images build and run end to end. The musl bases are not in
+# the public Nix cache, so any not already in the varde Cachix cache compile
+# from source and a cache-cold run can take hours. Failures are collected (the
+# run does not stop at the first one) and reported in a table; exit is non-zero
+# if any example failed to build, failed its smoke test, or exceeded its budget.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -39,9 +40,24 @@ rabbitmq-simple|examples/rabbitmq/simple|image-rabbitmq-latest-musl|rabbitmq|htt
 memcached-simple|examples/memcached/simple|image-memcached-latest-musl|memcached|memcached|15
 EOF
 
-CONTAINERS=()
+# A misspelled name would otherwise match no row and "pass" by running nothing.
+# Compare the name column literally and whole-line (-xF): selected() below is
+# an exact string match, so a regex-shaped name like `node.*` that a pattern
+# match would accept still selects nothing and must be rejected here.
+# (`${ONLY[@]+…}`: an empty array is "unbound" under set -u in bash < 4.4,
+# e.g. macOS's system bash — same reason selected() length-checks first.)
+for n in ${ONLY[@]+"${ONLY[@]}"}; do
+  printf '%s\n' "$TABLE" | cut -d'|' -f1 | grep -qxF -- "$n" \
+    || { echo "unknown example: $n" >&2; exit 2; }
+done
+
+# Containers first, then the volumes they mount (a volume in use won't remove).
+CONTAINERS=(); VOLUMES=()
 # shellcheck disable=SC2329  # invoked indirectly via the EXIT trap
-cleanup() { for c in "${CONTAINERS[@]:-}"; do [ -n "$c" ] && docker rm -f "$c" >/dev/null 2>&1 || true; done; }
+cleanup() {
+  for c in "${CONTAINERS[@]:-}"; do [ -n "$c" ] && docker rm -f "$c" >/dev/null 2>&1 || true; done
+  for v in "${VOLUMES[@]:-}"; do [ -n "$v" ] && docker volume rm "$v" >/dev/null 2>&1 || true; done
+}
 trap cleanup EXIT
 
 selected() { # $1=name -> 0 if it should run
@@ -80,13 +96,23 @@ smoke_http() { # $1=image $2=cport $3=path $4=needle
   echo "   http smoke failed; last 20 log lines:"; docker logs "$cid" 2>&1 | tail -20
   docker rm -f "$cid" >/dev/null; return 1
 }
-smoke_redis() { # $1=image
-  local cid
-  cid=$(docker run -d "$1"); CONTAINERS+=("$cid")
+redis_probe() { # $1=host port -> 0 if PING answers +PONG; bash /dev/tcp, RESP inline
+  exec 3<>"/dev/tcp/127.0.0.1/$1" || return 1
+  printf 'PING\r\nQUIT\r\n' >&3
+  local rc=1
+  grep -qF "+PONG" <&3 && rc=0
+  exec 3>&- 3<&- || true
+  return "$rc"
+}
+smoke_redis() { # $1=image ; host-side, through a published port, on purpose:
+  # a `docker exec redis-cli ping` is a loopback client that protected mode
+  # never denies, so it would pass even if the example's `protected-mode no` /
+  # `bind * -::*` regressed. A remote client is the behaviour the example adds.
+  local cid host
+  cid=$(docker run -d -p "127.0.0.1:0:6379" "$1"); CONTAINERS+=("$cid")
+  host=$(docker port "$cid" "6379/tcp" | head -n1 | sed 's/.*://')
   for _ in $(seq 1 40); do
-    if docker exec "$cid" /runtime/bin/redis-cli ping 2>/dev/null | grep -q PONG; then
-      docker rm -f "$cid" >/dev/null; return 0
-    fi
+    if redis_probe "$host" 2>/dev/null; then docker rm -f "$cid" >/dev/null; return 0; fi
     sleep 0.5
   done
   echo "   redis smoke failed; last 20 log lines:"; docker logs "$cid" 2>&1 | tail -20
@@ -94,7 +120,7 @@ smoke_redis() { # $1=image
 }
 smoke_postgres() { # $1=image ; one-time initdb against a volume, then run + query
   local cid vol="vpg-$$"
-  docker volume create "$vol" >/dev/null
+  docker volume create "$vol" >/dev/null; VOLUMES+=("$vol")
   docker run --rm -v "$vol:/app" --entrypoint /runtime/bin/initdb "$1" -U postgres --auth=trust \
     || { docker volume rm "$vol" >/dev/null; return 1; }
   cid=$(docker run -d -v "$vol:/app" "$1"); CONTAINERS+=("$cid")
@@ -182,7 +208,7 @@ done <<<"$TABLE"
 {
   echo ""
   printf '%-26s %-14s %8s  %8s  %s\n' "EXAMPLE" "BASE" "SIZE" "BUDGET" "RESULT"
-  [ "${#ROWS[@]}" -gt 0 ] && printf '%s\n' "${ROWS[@]}"
+  if [ "${#ROWS[@]}" -gt 0 ]; then printf '%s\n' "${ROWS[@]}"; fi
 } | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"
 
 exit "$FAILED"

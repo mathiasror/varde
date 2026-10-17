@@ -46,7 +46,8 @@ RUN npm ci --omit=dev
 # MANDATORY: the final runtime stage is FROM ${BASE_IMAGE}.
 FROM ${BASE_IMAGE}
 
-# The base already sets WORKDIR /app, USER 1000:1000 and ENTRYPOINT ["node"].
+# The base already sets WORKDIR /app, USER 1000:1000 and
+# ENTRYPOINT ["/runtime/bin/node"].
 # Bring in the installed dependencies from the builder, then the app source.
 COPY --from=deps /build/node_modules /app/node_modules
 COPY src/ /app/src/

@@ -5,7 +5,9 @@
 # THE varde-nginx CONTRACT (read this once, it explains every choice below):
 #   - non-root user 1000:1000, WORKDIR /app, NO shell, NO package manager.
 #   - The base ships a non-root-friendly default config and runs, as PID 1:
-#         nginx -p /tmp -c /etc/nginx/nginx.conf -g "daemon off;"
+#         nginx -p /tmp -e stderr -c /etc/nginx/nginx.conf -g "daemon off;"
+#     (`-e stderr` replaces the compile-time error-log path nginx opens BEFORE
+#     reading the config; without it every start emits an alert.)
 #     That default config sets `root /app;` and `index index.html;`, listens on
 #     :8080 (an UNPRIVILEGED port — required, since a non-root process cannot
 #     bind :80), writes its pid/temp under the sticky /tmp, and logs to
@@ -26,7 +28,8 @@
 #            -v "$PWD/nginx.conf:/etc/nginx/nginx.conf:ro" my-site
 #     2. Bake a different config path in and override the entrypoint's `-c`
 #        flag (keep it listening on an unprivileged port and writing under /tmp,
-#        or the non-root process will fail to start).
+#        or the non-root process will fail to start; keep `-e stderr` too, or
+#        the startup alert the base silences comes back).
 #
 #   libc note: varde's DEFAULT libc is musl (bare `:latest` is musl); opt into
 #   glibc with `:latest-glibc`. Static file serving is libc-agnostic, so either

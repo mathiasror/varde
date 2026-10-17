@@ -2,8 +2,20 @@ name: e2e-examples
 
 # Builds every example in examples/<image>/<variant>/ on top of a locally-built
 # varde base (the musl default), smoke-tests that the app runs, and asserts an
-# image-size budget. The bases are built with Nix (musl node/nginx/redis compile
-# from source, so a full run is not fast); Actions minutes are free on public repos.
+# image-size budget. The bases are built with Nix; the musl variants are not in
+# the public Nix cache, so any the varde Cachix cache does not already hold
+# compile from source (see build.yml's `heavy` note — a cache-cold run takes
+# hours); Actions minutes are free on public repos.
+#
+# Runs on PRs that touch an input, and — via workflow_run — after every
+# successful build-image run on main (each weekly flake.lock bump, and every
+# merge that rebuilds the images: build.yml's push trigger is path-filtered,
+# so an examples-only merge gets no post-merge run here — its PR-time run is
+# its coverage). The bump commits with GITHUB_TOKEN and so never triggers a
+# push run here; without the chain the examples were never checked against
+# the lock the published bases actually came from. Chaining off the build
+# also means the Cachix cache that run just populated is warm. Note a
+# workflow_run failure emails nobody: the Actions tab is the signal.
 on:
   pull_request:
     paths:
@@ -15,6 +27,10 @@ on:
       - "scripts/e2e.sh"
       - ".github/workflows/e2e.yml"
   workflow_dispatch:
+  workflow_run:
+    workflows: [build-image]
+    types: [completed]
+    branches: [main] # head_branch of the triggering run; the bump's dispatch resolves to main
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -27,8 +43,22 @@ jobs:
   e2e:
     name: build + smoke examples
     runs-on: ubuntu-latest
+    # Post-publish only for main builds that succeeded. build-image also runs
+    # on pull_request (forks included); a fork PR whose head branch is
+    # literally named "main" would pass the branches filter and run its
+    # scripts/e2e.sh with our secrets, so exclude PR-triggered runs explicitly.
+    if: >-
+      github.event_name != 'workflow_run' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event != 'pull_request')
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          # In a workflow_run run github.sha is the *current* tip of main, not
+          # the commit build-image built; pin to that commit so the examples
+          # are checked against the exact lock the published images came from.
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          persist-credentials: false # nothing here pushes via git
       # `determinate: false` -> plain upstream Nix; avoids the FlakeHub login
       # warning on every job (we use Cachix, not FlakeHub — see build.yml).
       - uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22

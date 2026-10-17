@@ -20,8 +20,12 @@
 #       docker exec <ctr> rabbitmqctl list_queues
 #   - All mutable state lives under /app (writable, uid 1000): mnesia data in
 #     /app/mnesia, the auto-created Erlang cookie at /app/.erlang.cookie.
-#     NOTE: RabbitMQ's data dir embeds the node name (rabbit@<hostname>), so
-#     for PERSISTENT data run with a stable hostname:
+#     /app/mnesia ships in the base image owned by 1000:1000, so a fresh named
+#     volume mounted there inherits that ownership (Docker only copies it up
+#     when the mountpoint already exists in the image — mount at /app/mnesia,
+#     not a path the image lacks). NOTE: RabbitMQ's data dir embeds the node
+#     name (rabbit@<hostname>), so for PERSISTENT data run with a stable
+#     hostname:
 #       docker run --hostname my-rabbit -v rabbit-data:/app/mnesia ...
 #   - Free-disk-space monitoring is disabled (it needs /bin/sh + df; this image
 #     has neither) — watch disk from your container platform instead.
@@ -31,6 +35,8 @@
 #     docker run --rm -p 5672:5672 -p 15672:15672 my-rabbitmq
 #     open http://localhost:15672        # management UI (guest/guest)
 #     docker exec <ctr> rabbitmq-diagnostics ping   # -> Ping succeeded
+#   Ctrl-C on a foreground `docker run` ends the VM immediately (same as the
+#   official image); `docker stop` (SIGTERM) is the graceful shutdown path.
 #
 #   libc note: varde's DEFAULT libc is musl (bare `:latest` is musl); opt into
 #   glibc with `:latest-glibc`. RabbitMQ works on either.
