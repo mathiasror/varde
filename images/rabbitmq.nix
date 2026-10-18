@@ -128,6 +128,11 @@ let
                 --replace-fail \
                 'erlang:open_port({spawn_executable, "/bin/sh"}, Opts).' \
                 'case os:find_executable("sh") of false -> not_used; Sh -> erlang:open_port({spawn_executable, Sh}, Opts) end.'
+              # 4.3.x (after 4.3.1) precompiles the management UI's EJS
+              # templates at build time with an `#!/usr/bin/env escript`
+              # script; there is no /usr/bin/env in the sandbox.
+              substituteInPlace deps/rabbitmq_management/scripts/precompile_ejs_templates \
+                --replace-fail '#!/usr/bin/env escript' '#!${erlang}/bin/escript'
             '';
           });
 
