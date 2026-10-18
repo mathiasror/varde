@@ -13,7 +13,12 @@
   # deliberately updates only `nixpkgs`. A weekly bump can now only break the
   # image contents actually being rebuilt, never the machinery that packages
   # them. Follows nothing — nixpkgs has no inputs of its own.
-  inputs.nixpkgs-tools.url = "github:NixOS/nixpkgs/624af665418d3c65d544145b4d34ad696439570e";
+  # Bumped to the Oct 15 2026 nixos-unstable rev for syft 1.54.0, which stops
+  # giving every bundled PHP extension a bare upstream CPE (anchore/syft#5102:
+  # ext/curl at the PHP version was emitted as cpe:…:curl:curl:8.5.11 and
+  # haxx:curl, i.e. 43 phantom curl CVEs) — the version `grype <image>` already
+  # ships, so the attested SBOM and a user's scan agree again.
+  inputs.nixpkgs-tools.url = "github:NixOS/nixpkgs/fe13242281a67641c0102cdb1087f0ebe586c7df";
 
   outputs =
     { self, nixpkgs, nixpkgs-tools }:
@@ -26,6 +31,15 @@
       ];
       forAllSystems = f: lib.genAttrs systems f;
       vardeLib = import ./lib { inherit nixpkgs; };
+      vardeVex = import ./lib/vex.nix { inherit lib; };
+      # OpenVEX wants RFC 3339. Use the source's commit time, not the wall
+      # clock, so the document stays a pure function of the commit.
+      vexTimestamp =
+        let
+          d = self.lastModifiedDate or "19700101000000";
+          s = a: b: builtins.substring a b d;
+        in
+        "${s 0 4}-${s 4 2}-${s 6 2}T${s 8 2}:${s 10 2}:${s 12 2}Z";
 
       # Auto-discover image modules. Adding images/<name>.nix is all it takes for
       # a new image to appear in `nix build`, the SBOM apps, and CI.
@@ -79,6 +93,32 @@
           else
             prev.sqlite;
       };
+      # OpenSSL 3.5.9 (2026-09-29) fixes 13 CVEs, 4 rated High (CVE-2026-54873,
+      # -72897, -84782, -84784). nixpkgs took it through staging (PR #568288),
+      # which reached master on 2026-10-16 (staging-next #571813) but was still
+      # missing from nixos-unstable on 2026-10-18. The tarball's sha256 is the
+      # one nixpkgs master uses, so this changes the version and src only.
+      # The patches are the same ones 3.5.8 uses.
+      # Musl-only for the same cache reason as p11kit above: a glibc override
+      # would cache-miss every glibc image's openssl dependents (python, curl,
+      # postgres, php, node, ...) on both arches until the channel caught up.
+      # Guarded on 3.5.8, so it turns into a no-op once a bump brings 3.5.9 or
+      # newer. Delete it then. fetchurlBoot rather than fetchurl: fetchurl's
+      # own curl links an override of this openssl, so a plain fetchurl here
+      # would be an evaluation cycle.
+      openssl359Musl = final: prev: {
+        openssl_3_5 =
+          if prev.stdenv.hostPlatform.isMusl && prev.openssl_3_5.version == "3.5.8" then
+            prev.openssl_3_5.overrideAttrs rec {
+              version = "3.5.9";
+              src = final.stdenv.fetchurlBoot {
+                url = "https://github.com/openssl/openssl/releases/download/openssl-${version}/openssl-${version}.tar.gz";
+                hash = "sha256-YD9WAuLu8A13+9Qp003NWCK7MBdXobyc2yTGcPHrhZo=";
+              };
+            }
+          else
+            prev.openssl_3_5;
+      };
       # One nixpkgs instantiation per system, shared by every consumer below.
       # Attribute sets memoize; a plain `pkgsFor = system: import nixpkgs …`
       # function does not (Nix never caches function application), so every
@@ -90,6 +130,7 @@
           overlays = [
             p11kitTeardownRaceFix
             sqliteMuslNoCheck
+            openssl359Musl
           ];
         }
       );
@@ -205,6 +246,26 @@
       # `nix eval --json .#latestTags`   -> {jre="21"; python="3.13"; ...}  (version; CI resolves default libc)
       # `nix eval --json .#imageAliases` -> {go="static"; rust="glibc";}    (published as mirror digests)
       ciMatrix = map (e: { inherit (e) image tag attr sbomName libc; }) (entriesFor "x86_64-linux");
+
+      # `nix eval --json .#vex.<system>.<sbomName>` -> the OpenVEX document for
+      # that image (lib/vex.nix). CI passes it to grype (--vex) and attests it
+      # next to the SBOM.
+      vex = forAllSystems (
+        system:
+        lib.listToAttrs (
+          map (
+            e:
+            lib.nameValuePair e.sbomName (
+              vardeVex.vexFor {
+                pkgs = pkgsBySystem.${system};
+                inherit (e) libc;
+                timestamp = vexTimestamp;
+                id = "https://github.com/mathiasror/varde/vex/${e.image}-${e.tag}-${system}@${self.rev or "dirty"}";
+              }
+            )
+          ) (entriesFor system)
+        )
+      );
       inherit latestTags;
       imageAliases = {
         go = "static";

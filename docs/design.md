@@ -139,6 +139,19 @@ best-effort — it compares upstream versions, so a CVE nixpkgs patched without
 a version bump still shows, and expect some noise relative to a distro
 package database.
 
+Version-based CPE matching also reports CVEs nixpkgs has already patched, CVEs
+filed against a different product, and CVEs in components that are not
+shipped. Each image therefore carries an OpenVEX document
+([`lib/vex.nix`](../lib/vex.nix)): a `fixed` statement for every CVE a nixpkgs
+patch in the image is named after (derived from the derivation, so it tracks
+the patch), plus reviewed statements with evidence in
+[`vex/statements.nix`](../vex/statements.nix). CI scans with `grype --vex`,
+logs what was suppressed, and attests the document next to the SBOM; grype
+keeps suppressed matches in `ignoredMatches`, so nothing is hidden. Every
+syft component also gets exactly one NVD identity: an extra component
+supersedes the syft components carrying the same (or a listed equivalent)
+vendor:product, and a post-condition fails the SBOM if a duplicate survives.
+
 The SBOM tooling (syft, jq, the script wrapper) comes from a separately pinned
 nixpkgs — the `nixpkgs-tools` flake input, which the weekly bump never
 touches — while the images and the component versions keep tracking the

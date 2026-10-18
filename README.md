@@ -227,6 +227,33 @@ best-effort, and it compares upstream versions — a CVE nixpkgs fixed with a
 patch still shows until the version moves — so expect occasional false
 positives and misses compared to a distro package database.
 
+### False positives and the OpenVEX attestation
+
+grype compares upstream versions, so a CVE that nixpkgs fixed with a patch,
+without bumping the version, still shows up, and so do CVEs filed against a
+different product or a component that varde does not ship. Each image carries
+an **OpenVEX attestation** that records those cases. It holds a `fixed`
+statement for every CVE a nixpkgs patch in the image is named after, plus the
+hand-reviewed `not_affected` and `fixed` statements in
+[`vex/statements.nix`](vex/statements.nix), each with its evidence. It is
+generated from the same commit as the image ([`lib/vex.nix`](lib/vex.nix)),
+and CI's scan applies it. To apply it yourself:
+
+```bash
+IMG=ghcr.io/mathiasror/varde-postgres:17
+cosign verify-attestation --type openvex \
+  --certificate-identity https://github.com/mathiasror/varde/.github/workflows/build.yml@refs/heads/main \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  "$IMG" | jq -r '.payload | @base64d | fromjson | .predicate' > vex.openvex.json
+grype --vex vex.openvex.json sbom:sbom.cdx.json   # or: grype --vex vex.openvex.json "$IMG"
+```
+
+grype moves VEX-covered matches to `ignoredMatches` (see `-o json`) rather than
+deleting them, so you can always audit what was suppressed and why. From a
+checkout, `nix eval --json .#vex.x86_64-linux.sbom-postgres-17-glibc` prints the same
+document. A statement is varde's claim, not upstream's, so review
+`vex/statements.nix` if your policy requires it.
+
 > SARIF upload to the GitHub **Security** tab is wired up but non-fatal — scan
 > findings land under **Security → Code scanning** per image/arch. (On a private
 > fork this needs GitHub Advanced Security and is skipped gracefully.)
@@ -240,7 +267,7 @@ to the image so it travels with it, not just a CI artifact) and a **SLSA
 build-provenance attestation** (builder, source commit, invocation). Signatures
 and attestations are recorded in the public Rekor transparency log; the multi-arch
 manifest lists are signed too, so verifying by tag works. Per-arch tags are
-moved onto a digest only *after* its signature and both attestations are
+moved onto a digest only *after* its signature and all three attestations are
 attached and verified, so a tag never points at an unsigned image. The
 `varde-go` / `varde-rust` aliases get the per-arch signature and attestations
 copied into their own repo (and re-verified there) before their lists are

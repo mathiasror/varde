@@ -110,7 +110,16 @@ let
           # rewritten alongside buildInputs. Done here in the extension map
           # because php.override { packageOverrides = …; } is silently dropped
           # for buildEnv results (see the composition note below).
-          libavif = p.libavif.overrideAttrs (prev: {
+          # libtiff, too, rode in on gd: libgd links it for gdImageCreateFromTiff,
+          # but ext/gd exposes no TIFF API at all (its formats are avif bmp gif
+          # jpeg png tga wbmp webp xbm xpm), and the stock libwebp gd and
+          # libavif link ships cwebp/dwebp/img2webp, which link libtiff for
+          # TIFF input. Build gd --without-tiff and point gd and libavif at
+          # nixpkgs' own tiff-less libwebp (the exact one libtiff itself links,
+          # so it is a cache hit on glibc and already in the closure) —
+          # no PHP-visible functionality changes.
+          libwebp = p.libwebp.override { tiffSupport = false; };
+          libavif = (p.libavif.override { inherit libwebp; }).overrideAttrs (prev: {
             postInstall = (prev.postInstall or "") + ''
               rm -rf "$out/bin" "$out/libexec" "$out/share/thumbnailers" "$out/lib/gdk-pixbuf-2.0"
             '';
@@ -131,7 +140,14 @@ let
                 -t ${p.gzip} -t ${p.ncompress} {} +
             '';
           });
-          gd = p.gd.override { inherit libavif libxpm; };
+          gd =
+            (p.gd.override {
+              inherit libavif libxpm libwebp;
+              libtiff = null;
+            }).overrideAttrs
+              (prev: {
+                configureFlags = (prev.configureFlags or [ ]) ++ [ "--without-tiff" ];
+              });
 
           # gettext (linked by ext-gettext for libintl — a real runtime dep on
           # musl, where libintl doesn't live in the libc) ships bash scripts
@@ -231,6 +247,28 @@ let
         "PHP_INI_SCAN_DIR=/runtime/lib"
       ];
       # no fhs: extensions are Nix-built and find their libs via RPATH.
+
+      # Bundled extensions are part of PHP's own source tree, so their CVEs
+      # are filed against php:php — already carried by the php, php-cli and
+      # php-fpm components. syft nevertheless gives each extension a CPE of
+      # its own at the PHP version, and some collide with unrelated NVD
+      # products: ext/calendar -> php-calendar:php-calendar (a separate PHP
+      # web app, CVE-2017-6485/CVE-2022-4455), ext/curl -> curl:curl and
+      # haxx:curl before syft 1.54 (43 phantom libcurl CVEs). Strip them —
+      # both the php-interpreter-cataloger's per-.so components (named after
+      # the bare extension, e.g. curl@8.5.11) and the nix-cataloger's php-*
+      # store-path components. The real libcurl/openssl/zlib components
+      # (nix-cataloger, upstream versions) keep their CPEs.
+      sbomStripCpes = [
+        {
+          foundBy = "php-interpreter-cataloger";
+          name = "^(?!php-(cli|fpm)$)";
+        }
+        {
+          foundBy = "nix-cataloger";
+          name = "^php-";
+        }
+      ];
     };
 in
 {

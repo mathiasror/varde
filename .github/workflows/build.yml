@@ -283,6 +283,16 @@ jobs:
         # silent no-op; fail fast instead.
         run: jq -e '.components | length > 0' sbom.cdx.json >/dev/null
 
+      - name: Generate OpenVEX (nixpkgs patches + vex/statements.nix)
+        env:
+          SBOM: ${{ matrix.sbomName }}
+        run: |
+          # Pure eval, no build: lib/vex.nix reads the patches straight off
+          # this leg's package set (see the header there).
+          sys="$(nix eval --raw --impure --expr builtins.currentSystem)"
+          nix eval --json ".#vex.${sys}.${SBOM}" > vex.openvex.json
+          jq -e '.statements | type == "array"' vex.openvex.json >/dev/null
+
       - name: Scanner canary (known-CVE fixture must produce findings)
         run: |
           # Guard against a silently no-op scanner — the exact failure mode this
@@ -314,13 +324,21 @@ jobs:
           # the *app* image, not here (grype only gates when --fail-on is passed,
           # which it deliberately is not). Unlike trivy there is no display
           # severity filter; the table lists all severities.
-          nix run --inputs-from . nixpkgs-tools#grype -- \
-            -o table -o sarif=grype-sbom.sarif sbom:sbom.cdx.json
-          # grype leaves artifactLocation.uri empty for SBOM inputs, and GitHub
-          # code scanning drops results without a file path — anchor findings to
-          # this image's Nix module.
+          # --vex moves matches that the image's OpenVEX marks fixed or
+          # not_affected out of the table and the SARIF. They still land in
+          # the JSON's ignoredMatches, and the step lists them below, so
+          # nothing is hidden from the log.
+          nix run --inputs-from . nixpkgs-tools#grype -- --vex vex.openvex.json \
+            -o table -o sarif=grype-sbom.sarif -o json="$RUNNER_TEMP/grype.json" sbom:sbom.cdx.json
+          echo "Suppressed by VEX (reasons in vex.openvex.json):"
+          jq -r '.ignoredMatches[]? | "  \(.vulnerability.id) \(.artifact.name)@\(.artifact.version): \(.appliedIgnoreRules[0]["vex-status"])"' \
+            "$RUNNER_TEMP/grype.json" | sort -u
+          # grype leaves artifactLocation.uri empty — or "/" for a component
+          # with no file location, i.e. every hand-authored varde-extra-*
+          # identity — for SBOM inputs, and GitHub code scanning drops results
+          # without a file path — anchor findings to this image's Nix module.
           jq --arg uri "images/${IMAGE}.nix" \
-            '(.runs[0].results[]?.locations[]?.physicalLocation.artifactLocation.uri) |= (if . == "" then $uri else . end)' \
+            '(.runs[0].results[]?.locations[]?.physicalLocation.artifactLocation.uri) |= (if . == "" or . == "/" then $uri else . end)' \
             grype-sbom.sarif > grype-sbom.sarif.tmp && mv grype-sbom.sarif.tmp grype-sbom.sarif
 
       - name: "Trivy: secrets in the image filesystem"
@@ -364,7 +382,9 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: sbom-${{ matrix.image }}-${{ matrix.tag }}-${{ matrix.arch }}
-          path: sbom.cdx.json
+          path: |
+            sbom.cdx.json
+            vex.openvex.json
           overwrite: true
 
       - name: Smoke test (image actually runs)
@@ -465,7 +485,7 @@ jobs:
       # Pushed UNTAGGED (skopeo's documented `<name>@@unknown-digest@@` form):
       # blobs and manifest land in the repo addressed by digest only. The real
       # per-arch tag is moved onto that digest in the last step of this job,
-      # after the signature and both attestations are attached AND verified —
+      # after the signature and all attestations are attached AND verified —
       # so whatever fails in between, the tag keeps pointing at its previous,
       # already-signed digest. Previously the tag moved first: in run
       # 33391537615 (2026-08-31) cosign's ambient-OIDC fetch then died and
@@ -516,6 +536,7 @@ jobs:
           retry(){ local n=1; until "$@"; do [ "$n" -ge 3 ] && return 1; sleep $((n * 10)); n=$((n + 1)); done; }
           retry "$RUNNER_TEMP/cosign/bin/cosign" sign --yes "$IMAGE_REF"
           retry "$RUNNER_TEMP/cosign/bin/cosign" attest --yes --type cyclonedx --predicate sbom.cdx.json "$IMAGE_REF"
+          retry "$RUNNER_TEMP/cosign/bin/cosign" attest --yes --type openvex --predicate vex.openvex.json "$IMAGE_REF"
 
       # SLSA build-provenance attestation (structured: builder, source commit,
       # invocation) on the same per-arch digest, pushed to GHCR as a referrer so
@@ -550,11 +571,15 @@ jobs:
             --certificate-identity "https://github.com/${GITHUB_WORKFLOW_REF}" \
             --certificate-oidc-issuer https://token.actions.githubusercontent.com \
             "$IMAGE_REF" >/dev/null
+          cosign verify-attestation --type openvex \
+            --certificate-identity "https://github.com/${GITHUB_WORKFLOW_REF}" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            "$IMAGE_REF" >/dev/null
           gh attestation verify "oci://${IMAGE_REF}" \
             --repo "$GITHUB_REPOSITORY" \
             --cert-identity "https://github.com/${GITHUB_WORKFLOW_REF}" \
             --bundle-from-oci
-          echo "verified: signature + cyclonedx attestation + SLSA provenance on $IMAGE_REF"
+          echo "verified: signature + cyclonedx + openvex attestations + SLSA provenance on $IMAGE_REF"
 
       # Every blob already exists in the repo, so this is one manifest PUT:
       # the tag flips atomically from its previous (signed) digest to this one.
@@ -843,11 +868,15 @@ jobs:
               --certificate-identity "https://github.com/${GITHUB_WORKFLOW_REF}" \
               --certificate-oidc-issuer https://token.actions.githubusercontent.com \
               "$2" >/dev/null
+            cosign verify-attestation --type openvex \
+              --certificate-identity "https://github.com/${GITHUB_WORKFLOW_REF}" \
+              --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+              "$2" >/dev/null
             gh attestation verify "oci://$2" \
               --repo "$GITHUB_REPOSITORY" \
               --cert-identity "https://github.com/${GITHUB_WORKFLOW_REF}" \
               --bundle-from-oci
-            echo "verified: signature + cyclonedx attestation + SLSA provenance on $2 (copied from $1)"
+            echo "verified: signature + cyclonedx + openvex attestations + SLSA provenance on $2 (copied from $1)"
           }
           export -f copy_one
           sort -u "$COPYLIST" -o "$COPYLIST"

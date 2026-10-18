@@ -119,12 +119,21 @@ let
 
       # SBOM: NVD files current CPython CVEs under
       # `python_software_foundation:cpython`, so the vendor=name CPE syft
-      # derives (python3:python3) matches nothing. Scan metadata only.
+      # derives (python3:python3) matches nothing. syft's binary cataloger
+      # separately finds /runtime/bin/python3.x as
+      # `python_software_foundation:python` (alt CPE `python:python`), which
+      # NVD lists on the same CVEs — every CVE was reported twice. This
+      # component supersedes those (buildSbomApp drops them), so the image has
+      # exactly one CPython identity on every arch. Scan metadata only.
       sbomExtraComponents = [
         (vardeLib.sbomComponent {
           vendor = "python_software_foundation";
           product = "cpython";
           version = py.version;
+          supersedes = [
+            "python_software_foundation:python"
+            "python:python"
+          ];
         })
       ];
     };

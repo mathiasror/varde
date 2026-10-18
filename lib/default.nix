@@ -6,7 +6,8 @@
 # bare version (no libc suffix) for an mkVariants module — flake.nix's
 # latestTags rejects anything else at eval time. Each `spec` is:
 #   { contents ? [], entrypoint, cmd ? null, env ? [], libc, fhs ? false,
-#     stopSignal ? null, sbomExtraComponents ? [ ], closureAllow ? [ ] }
+#     stopSignal ? null, sbomExtraComponents ? [ ], sbomStripCpes ? [ ],
+#     closureAllow ? [ ] }
 # `contents` are language-specific store paths merged at image root (e.g. a
 # runtime relocated under /runtime). `libc` ("musl" | "glibc" | null) is set by
 # mkVariants or the base specs below — flake.nix reads it for the CI matrix (and
@@ -315,12 +316,22 @@ rec {
   # One hand-authored CycloneDX component carrying an exact NVD CPE identity.
   # `product` is the CPE product field (may contain CPE escapes, e.g.
   # erlang\/otp); `name` is the plain component/purl name when they differ.
+  #
+  # An extra component is THE identity of its software: buildSbomApp drops
+  # every syft-derived component whose CPE has the same vendor:product (e.g.
+  # syft's binary-cataloger `oracle:openjdk`, `nodejs:node.js`), so one CVE
+  # yields one finding, not one per cataloger. `supersedes` lists further
+  # vendor:product pairs that name the same software under another NVD
+  # identity (syft's `python_software_foundation:python` for CPython) and
+  # must be dropped too. Carried as CycloneDX properties so the component
+  # stays schema-valid.
   sbomComponent =
     {
       vendor,
       product,
       version,
       name ? product,
+      supersedes ? [ ],
     }:
     {
       type = "application";
@@ -328,7 +339,36 @@ rec {
       inherit name version;
       cpe = "cpe:2.3:a:${vendor}:${product}:${version}:*:*:*:*:*:*:*";
       purl = "pkg:generic/${name}@${version}";
+    }
+    // lib.optionalAttrs (supersedes != [ ]) {
+      properties = map (value: {
+        name = "varde:supersedes";
+        inherit value;
+      }) supersedes;
     };
+
+  # jq program for buildSbomApp: drop syft components an extra component
+  # supersedes (same CPE vendor:product as an extra, or listed in an extra's
+  # varde:supersedes properties — matched on .cpe AND syft's alternative
+  # syft:cpe23 properties), prune their dangling dependency edges, then append
+  # the extras. Splitting a CPE on ":" is safe: CPE escapes are `\/`, `\.`, …,
+  # never `\:` in the vendor/product fields we emit.
+  sbomDedupeJq = toolsPkgs: toolsPkgs.writeText "varde-sbom-dedupe.jq" ''
+    def cpeKey: split(":") | "\(.[3]):\(.[4])";
+    def cpesOf: [.cpe // empty]
+      + [(.properties // [])[] | select(.name == "syft:cpe23") | .value];
+    def superseded($ids): cpesOf | any(.[]; cpeKey | IN($ids[]));
+    ($extra | map(.cpe | cpeKey)
+      + map((.properties // [])[] | select(.name == "varde:supersedes") | .value)) as $ids
+    | ([.components[] | select(superseded($ids)) | ."bom-ref" // empty]) as $dropped
+    | .components |= map(select(superseded($ids) | not))
+    | if has("dependencies") then
+        .dependencies |= map(
+          select(.ref | IN($dropped[]) | not)
+          | if has("dependsOn") then .dependsOn |= map(select(IN($dropped[]) | not)) else . end)
+      else . end
+    | .components += $extra
+  '';
 
   # CycloneDX SBOM (with CPEs) of the built image — system packages (glibc,
   # zlib, …) plus the language runtime — read by syft straight from the image
@@ -357,6 +397,19 @@ rec {
   #   2. Pruned runtimes (mysql, rabbitmq/erlang — and the stripped python/node
   #      copies) sever their store references to the upstream package, so the
   #      shipped software is not even a named component in its own closure.
+  # and one it corrects by removing identities:
+  #   3. A component can carry a CPE that names a DIFFERENT product. PHP is
+  #      the case: every bundled extension (ext/curl, ext/calendar, …) is
+  #      cataloged at the PHP version, and its CPE collides with an unrelated
+  #      NVD product — syft < 1.54 emitted cpe:…:curl:curl:8.5.11 for
+  #      curl.so (43 phantom curl CVEs), and php-calendar:php-calendar is a
+  #      separate PHP web app in NVD. spec.sbomStripCpes lists
+  #      { foundBy ? <syft cataloger>; name = <regex on component name>; }
+  #      rules; matching components keep their name/version/purl but lose
+  #      every CPE (the `cpe` field and syft's extra syft:cpe23 properties,
+  #      which grype also reads). Only for components whose code is already
+  #      covered by another component's correct CPE — for PHP, php:php on
+  #      the php/php-cli/php-fpm components — so no real CVE goes unmatched.
   #
   # Two package sets, deliberately: `pkgs` (the moving image nixpkgs) supplies
   # the component versions — those MUST track what is actually shipped.
@@ -393,6 +446,18 @@ rec {
       libc = spec.libc;
       libcComponents = lib.optionals (libc != null) [ (sbomComponent libcIds.${libc}) ];
       extraComponents = libcComponents ++ (spec.sbomExtraComponents or [ ]);
+      stripCpes = spec.sbomStripCpes or [ ];
+      # Drop the CPEs of components matching a spec.sbomStripCpes rule (see
+      # 3. above). Runs before the extras are merged in.
+      stripJq = toolsPkgs.writeText "${name}-sbom-strip.jq" ''
+        def foundBy: [(.properties // [])[] | select(.name == "syft:package:foundBy") | .value][0];
+        def stripped($rules): foundBy as $fb | .name as $n
+          | any($rules[]; (.foundBy == null or .foundBy == $fb) and (.name as $re | $n | test($re)));
+        .components |= map(
+          if stripped($strip) then
+            del(.cpe) | .properties = [(.properties // [])[] | select(.name != "syft:cpe23")]
+          else . end)
+      '';
       app = toolsPkgs.writeShellApplication {
         name = "${name}-sbom";
         runtimeInputs = [ toolsPkgs.gzip ];
@@ -406,6 +471,11 @@ rec {
           gzip -dc ${image} > "$work/image.tar"
           SYFT_CHECK_FOR_APP_UPDATE=false ${toolsPkgs.syft}/bin/syft -q \
             "docker-archive:$work/image.tar" -o "cyclonedx-json=$out"
+          ${lib.optionalString (stripCpes != [ ]) ''
+            ${toolsPkgs.jq}/bin/jq --argjson strip ${lib.escapeShellArg (builtins.toJSON stripCpes)} \
+              -f ${stripJq} "$out" > "$work/stripped.cdx.json"
+            mv "$work/stripped.cdx.json" "$out"
+          ''}
           ${lib.optionalString (extraComponents != [ ]) ''
             # NVD-identity components (see the comment on buildSbomApp). Two
             # separate statements, not an `&&` list: bash exempts every command
@@ -414,13 +484,25 @@ rec {
             # output — which still passes CI's "components non-empty" check
             # while lacking exactly the components this step exists to add.
             # The temp file lives in $work so the EXIT trap cleans it up.
+            # The extras replace any syft component with the same NVD identity
+            # (see sbomComponent / sbomDedupeJq): syft's binary cataloger
+            # finds e.g. python3.13 as `python_software_foundation:python`
+            # while the extra is `…:cpython`, and both matched every CPython
+            # CVE — two alerts per CVE. One identity per runtime, always the
+            # extra: its version is wired to the Nix binding, not a heuristic.
             ${toolsPkgs.jq}/bin/jq --argjson extra ${lib.escapeShellArg (builtins.toJSON extraComponents)} \
-              '.components += $extra' "$out" > "$work/augmented.cdx.json"
+              -f ${sbomDedupeJq toolsPkgs} "$out" > "$work/augmented.cdx.json"
             mv "$work/augmented.cdx.json" "$out"
-            # Post-condition: every appended component (bom-ref varde-extra-*,
-            # see sbomComponent) must be present in the written file.
+            # Post-conditions: every appended component (bom-ref varde-extra-*,
+            # see sbomComponent) must be present in the written file, and no
+            # non-extra component may still carry an extra's CPE identity.
             ${toolsPkgs.jq}/bin/jq -e --argjson n ${toString (lib.length extraComponents)} \
               '(.components | map(select((."bom-ref" // "") | startswith("varde-extra-"))) | length) == $n' \
+              "$out" > /dev/null
+            ${toolsPkgs.jq}/bin/jq -e \
+              '([.components[] | select((."bom-ref" // "") | startswith("varde-extra-")) | .cpe | split(":") | "\(.[3]):\(.[4])"]) as $ids
+               | all(.components[] | select((."bom-ref" // "") | startswith("varde-extra-") | not);
+                     [.cpe // empty][] | split(":") | "\(.[3]):\(.[4])" | IN($ids[]) | not)' \
               "$out" > /dev/null
           ''}
           echo "Wrote CycloneDX SBOM (system packages + runtime) to $out"

@@ -71,6 +71,9 @@ let
           vendor = "f5";
           product = "nginx";
           version = p.nginx.version;
+          # syft's Nix cataloger also emits the legacy `nginx:nginx`; NVD's
+          # nginx:nginx CVEs are a subset of f5:nginx's, so it only doubles.
+          supersedes = [ "nginx:nginx" ];
         })
         (vardeLib.sbomComponent {
           vendor = "f5";
