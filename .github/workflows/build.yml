@@ -97,13 +97,13 @@ jobs:
       # Every checkout here is SHA-pinned and drops the GITHUB_TOKEN from
       # .git/config (persist-credentials: false): no job pushes via git, and
       # the build job runs unsandboxed Nix apps + docker from the checkout.
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       # `determinate: false` -> plain upstream Nix. The v22 default installs
       # Determinate Nix and tries a FlakeHub login on every job, which warns
       # ("determinate-nixd failed with exit code 1") since we don't use FlakeHub.
-      - uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
         with:
           determinate: false
       # On PRs, work out which images the diff actually touches so `gen` below
@@ -242,10 +242,10 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJSON(needs.setup.outputs.matrix) }}
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
         with:
           determinate: false # no FlakeHub login attempt (see setup job)
       # Shared binary cache: the first run compiles the from-source musl variants
@@ -261,7 +261,7 @@ jobs:
       # ran, flushed the queue, and stopped the daemon cleanly. Everything
       # pushed stays pushed, so the cache warms monotonically and the next
       # weekly run resumes from it instead of restarting cold.
-      - uses: cachix/cachix-action@5f2d7c5294214f71b873db4b969586b980625e71 # v17
+      - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
         with:
           name: varde
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
@@ -344,7 +344,7 @@ jobs:
       - name: Upload SBOM SARIF
         if: ${{ !cancelled() && hashFiles('grype-sbom.sarif') != '' }}
         continue-on-error: true
-        uses: github/codeql-action/upload-sarif@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
+        uses: github/codeql-action/upload-sarif@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
         with:
           sarif_file: grype-sbom.sarif
           category: sbom-${{ matrix.image }}-${{ matrix.tag }}-${{ matrix.arch }}
@@ -352,7 +352,7 @@ jobs:
       - name: Upload image SARIF
         if: ${{ !cancelled() && hashFiles('trivy-image.sarif') != '' }}
         continue-on-error: true
-        uses: github/codeql-action/upload-sarif@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
+        uses: github/codeql-action/upload-sarif@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
         with:
           sarif_file: trivy-image.sarif
           category: image-${{ matrix.image }}-${{ matrix.tag }}-${{ matrix.arch }}
@@ -361,7 +361,7 @@ jobs:
       # upload-artifact v4+ 409s on a same-name re-upload — without it a leg
       # that died anywhere after this step could never be re-run alone.
       - name: Upload SBOM artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: sbom-${{ matrix.image }}-${{ matrix.tag }}-${{ matrix.arch }}
           path: sbom.cdx.json
@@ -522,7 +522,7 @@ jobs:
       # it travels with the image. Verify with `gh attestation verify oci://…`.
       - name: Attest build provenance (SLSA)
         if: github.event_name != 'pull_request'
-        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-name: ${{ env.IMAGE_NAME }}
           subject-digest: ${{ env.IMAGE_DIGEST }}
@@ -592,7 +592,7 @@ jobs:
       # from main recovers (see the README's publish checklist).
       - name: Record the published digest for the manifest job
         if: github.event_name != 'pull_request'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: pushed-${{ matrix.image }}-${{ matrix.tag }}-${{ matrix.arch }}
           path: ${{ runner.temp }}/pushed/*
@@ -623,10 +623,10 @@ jobs:
     steps:
       # Checkout gives `--inputs-from .` the repo's flake.lock to resolve the
       # pinned `nixpkgs-tools` input from.
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22 (for `nix build --inputs-from . nixpkgs-tools#cosign`)
+      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v22 (for `nix build --inputs-from . nixpkgs-tools#cosign`)
         with:
           determinate: false # no FlakeHub login attempt (see setup job)
       - name: Log in to GHCR
@@ -637,7 +637,7 @@ jobs:
       # One `<image>.<tag>.<arch>` digest file per leg that fully published;
       # a leg that failed anywhere before its tag moved uploaded nothing.
       - name: Collect the digests the build legs published
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: pushed-*
           merge-multiple: true
