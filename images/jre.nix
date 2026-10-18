@@ -47,11 +47,22 @@ let
     # filed against the upstream codebase as `oracle:openjdk` (whose CPE
     # versions use the same 21.0.x update scheme) — so the vendor=name CPE
     # syft derives (temurin-jre-bin:…) matches nothing. Scan metadata only.
+    #
+    # Version: nixpkgs' temurin `version` is the 3-part feature/update triple
+    # (25.0.4) even when Adoptium ships a 4-part respin (jdk-25.0.4.1+1), and
+    # NVD's Oracle CPU ranges are cut at the respin (`< 25.0.4.1`) — so
+    # jre.version reported CVEs the shipped JRE already fixes. Take the
+    # release from the Adoptium download URL instead (…/download/jdk-25.0.4.1%2B1/…),
+    # falling back to jre.version if the layout ever changes.
     sbomExtraComponents = [
       (vardeLib.sbomComponent {
         vendor = "oracle";
         product = "openjdk";
-        version = jre.version;
+        version =
+          let
+            m = builtins.match ".*/download/jdk-([0-9.]+)%2B[0-9]+/.*" (builtins.head jre.srcs).url;
+          in
+          if m == null then jre.version else builtins.head m;
       })
     ];
   };

@@ -109,6 +109,17 @@ let
           }
         )).overrideAttrs
           (prev: {
+            # nixpkgs (master and nixos-unstable, Oct 2026) still pins 4.3.1,
+            # which is affected by ~20 GHSA/CVEs fixed in 4.3.2-4.3.6
+            # (CVE-2026-67223/67409/67410/67411/67412 high, CVE-2026-67419
+            # fixed in 4.3.5). Pin the upstream patch release until nixpkgs
+            # catches up; drop this override once p.rabbitmq-server.version
+            # >= 4.3.6 (src is finalAttrs-based upstream, so both must move).
+            version = "4.3.6";
+            src = p.fetchurl {
+              url = "https://github.com/rabbitmq/rabbitmq-server/releases/download/v4.3.6/rabbitmq-server-4.3.6.tar.xz";
+              hash = "sha256-6nAuX7iawMiCL6yCDPYLs1TIr0FJM32thj+fCAcu5hI=";
+            };
             # No /bin/sh in this image: make the disk monitor's port program
             # optional instead of an enoent crash at boot. With `sh` missing it
             # falls into the module's existing retry-then-disable error path.
@@ -117,6 +128,11 @@ let
                 --replace-fail \
                 'erlang:open_port({spawn_executable, "/bin/sh"}, Opts).' \
                 'case os:find_executable("sh") of false -> not_used; Sh -> erlang:open_port({spawn_executable, Sh}, Opts) end.'
+              # 4.3.x (after 4.3.1) precompiles the management UI's EJS
+              # templates at build time with an `#!/usr/bin/env escript`
+              # script; there is no /usr/bin/env in the sandbox.
+              substituteInPlace deps/rabbitmq_management/scripts/precompile_ejs_templates \
+                --replace-fail '#!/usr/bin/env escript' '#!${erlang}/bin/escript'
             '';
           });
 
@@ -374,17 +390,26 @@ let
       # SBOM: runtime (disallowedRequisites erlang, above) and dist
       # (allowedReferences ["out"]) deliberately sever their references to the
       # source packages, so neither the broker nor OTP would be named
-      # components in their own SBOM. NVD identities: RabbitMQ CVEs are filed
-      # under `broadcom:rabbitmq_server` (every 3.9+ advisory, including the
-      # 2026 ones); the older `vmware:rabbitmq` / `pivotal_software:rabbitmq`
-      # CPEs only carry pre-3.9 CVEs and match nothing for the shipped
-      # version. OTP's sparse NVD coverage sits under `erlang:erlang\/otp`.
-      # Scan metadata only; never enters image contents.
+      # components in their own SBOM. NVD identities: RabbitMQ CVEs are split
+      # across vendors — `broadcom:rabbitmq_server` carries a handful
+      # (CVE-2025-30219, CVE-2025-50200, CVE-2026-44839), while the 2026
+      # GHSA series (CVE-2026-672xx/674xx, fixed in 4.3.2–4.3.5) is filed
+      # under `vmware:rabbitmq` only. Either CPE alone misses the other's
+      # CVEs silently, so ship both (distinct `name`s keep bom-refs unique).
+      # `pivotal_software:rabbitmq` only adds the PCF-only, versionless
+      # CVE-2018-1279. OTP's sparse NVD coverage sits under
+      # `erlang:erlang\/otp`. Scan metadata only; never enters image contents.
       sbomExtraComponents = [
         (vardeLib.sbomComponent {
           vendor = "broadcom";
           product = "rabbitmq_server";
           name = "rabbitmq";
+          version = rabbitmq.version;
+        })
+        (vardeLib.sbomComponent {
+          vendor = "vmware";
+          product = "rabbitmq";
+          name = "rabbitmq-vmware";
           version = rabbitmq.version;
         })
         (vardeLib.sbomComponent {

@@ -66,10 +66,12 @@ jobs:
           determinate: false
       # Pull the bases from the shared cache that build.yml populates, instead of
       # recompiling the from-source musl variants here. (Reads are anonymous on
-      # the public cache; the token is only needed to push.)
+      # the public cache; the token is only needed to push.) Same pushFilter as
+      # build.yml: image tarballs are cheap to rebuild and too big to cache.
       - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
         with:
           name: varde
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          pushFilter: '(\.tar\.gz$|-customisation-layer$|-sbom$)'
       - name: Build examples on local bases, smoke-test, assert size budgets
         run: scripts/e2e.sh
