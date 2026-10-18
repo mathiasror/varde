@@ -414,6 +414,7 @@ scripts/e2e.sh                  # build examples on local bases, smoke + size bu
 .github/workflows/e2e.yml       # build + smoke-test the examples
 .github/workflows/pages.yml     # deploy the landing page to GitHub Pages
 .github/canary/                 # known-CVE SBOM fixture that guards the grype scan
+.github/dependabot.yml          # grouped version updates: SHA-pinned actions + example deps
 site/                           # landing page (static, no build step)
 docs/design.md                  # design notes
 LICENSE                         # Apache-2.0
