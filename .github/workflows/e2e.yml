@@ -52,7 +52,7 @@ jobs:
       (github.event.workflow_run.conclusion == 'success' &&
        github.event.workflow_run.event != 'pull_request')
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # In a workflow_run run github.sha is the *current* tip of main, not
           # the commit build-image built; pin to that commit so the examples
@@ -61,13 +61,13 @@ jobs:
           persist-credentials: false # nothing here pushes via git
       # `determinate: false` -> plain upstream Nix; avoids the FlakeHub login
       # warning on every job (we use Cachix, not FlakeHub — see build.yml).
-      - uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
         with:
           determinate: false
       # Pull the bases from the shared cache that build.yml populates, instead of
       # recompiling the from-source musl variants here. (Reads are anonymous on
       # the public cache; the token is only needed to push.)
-      - uses: cachix/cachix-action@5f2d7c5294214f71b873db4b969586b980625e71 # v17
+      - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
         with:
           name: varde
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
