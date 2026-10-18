@@ -72,6 +72,6 @@ jobs:
         with:
           name: varde
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
-          pushFilter: '(\.tar\.gz$|-customisation-layer$)'
+          pushFilter: '(\.tar\.gz$|-customisation-layer$|-sbom$)'
       - name: Build examples on local bases, smoke-test, assert size budgets
         run: scripts/e2e.sh

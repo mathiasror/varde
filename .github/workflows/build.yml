@@ -266,12 +266,15 @@ jobs:
       # already holds them, and rebuilding one from its cached closure takes
       # seconds; pushing them filled the cache, and Cachix's least-recently-used
       # eviction then dropped the expensive musl toolchain paths (llvm, rustc)
-      # instead. The hook expands the regex unquoted: keep it free of spaces.
+      # instead. The SBOM app (-sbom) is excluded too: its script references
+      # the tarball, and a push uploads the whole closure, so pushing it would
+      # carry the tarball along (seen in run 39167254538). The hook expands the
+      # regex unquoted: keep it free of spaces.
       - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
         with:
           name: varde
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
-          pushFilter: '(\.tar\.gz$|-customisation-layer$)'
+          pushFilter: '(\.tar\.gz$|-customisation-layer$|-sbom$)'
 
       - name: Build image
         env:
