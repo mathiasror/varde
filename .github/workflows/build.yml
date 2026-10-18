@@ -261,10 +261,17 @@ jobs:
       # ran, flushed the queue, and stopped the daemon cleanly. Everything
       # pushed stays pushed, so the cache warms monotonically and the next
       # weekly run resumes from it instead of restarting cold.
+      # pushFilter: never push the image tarballs (and the customisation layer
+      # they are assembled from). They are ~3.3 GB per full matrix run, GHCR
+      # already holds them, and rebuilding one from its cached closure takes
+      # seconds; pushing them filled the cache, and Cachix's least-recently-used
+      # eviction then dropped the expensive musl toolchain paths (llvm, rustc)
+      # instead. The hook expands the regex unquoted: keep it free of spaces.
       - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
         with:
           name: varde
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          pushFilter: '(\.tar\.gz$|-customisation-layer$)'
 
       - name: Build image
         env:
