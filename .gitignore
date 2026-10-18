@@ -7,6 +7,8 @@
 *.spdx.json
 *.sarif
 sbom.csv
+# brag/video renders
+/brag-output*/
 # … but the committed scanner-canary fixture is not a generated artifact
 !.github/canary/canary-sbom.cdx.json
 

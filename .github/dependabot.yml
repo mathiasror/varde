@@ -1,0 +1,80 @@
+# Version updates. Security updates are enabled in the repo settings and
+# open on their own; this file covers the rest.
+#
+# Every action is pinned to a full commit SHA with a `# vX.Y.Z` comment, so
+# nothing moves unless a PR moves it — Dependabot bumps the SHA and the
+# comment together. One grouped PR per ecosystem keeps the churn to a few
+# PRs a month. The images' own contents are not here: they come from
+# nixpkgs via flake.lock, which bump-lock.yml refreshes weekly.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: "chore(ci)"
+
+  # The examples are demo apps, not shipped artifacts; monthly is plenty.
+  - package-ecosystem: npm
+    directory: /examples/node/express
+    schedule:
+      interval: monthly
+    groups:
+      npm:
+        patterns: ["*"]
+    commit-message:
+      prefix: "chore(examples)"
+
+  - package-ecosystem: pip
+    directory: /examples/python/requirements-venv
+    schedule:
+      interval: monthly
+    groups:
+      pip:
+        patterns: ["*"]
+    commit-message:
+      prefix: "chore(examples)"
+
+  - package-ecosystem: uv
+    directory: /examples/python/uv
+    schedule:
+      interval: monthly
+    groups:
+      uv:
+        patterns: ["*"]
+    commit-message:
+      prefix: "chore(examples)"
+
+  - package-ecosystem: gradle
+    directory: /examples/jre/spring-boot-gradle
+    schedule:
+      interval: monthly
+    groups:
+      gradle:
+        patterns: ["*"]
+    commit-message:
+      prefix: "chore(examples)"
+
+  - package-ecosystem: cargo
+    directory: /examples/rust/simple
+    schedule:
+      interval: monthly
+    groups:
+      cargo:
+        patterns: ["*"]
+    commit-message:
+      prefix: "chore(examples)"
+
+  - package-ecosystem: gomod
+    directory: /examples/go/simple
+    schedule:
+      interval: monthly
+    groups:
+      gomod:
+        patterns: ["*"]
+    commit-message:
+      prefix: "chore(examples)"
