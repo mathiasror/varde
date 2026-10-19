@@ -407,7 +407,8 @@ jobs:
         if: matrix.image == 'rabbitmq' && matrix.libc == 'musl' && matrix.arch == 'amd64'
         run: |
           set -euo pipefail
-          cc=$(nix build --no-link --print-out-paths --inputs-from . 'nixpkgs#pkgsMusl.stdenv.cc')
+          cc=$(nix build --no-link --print-out-paths --inputs-from . 'nixpkgs#pkgsMusl.stdenv.cc^out')
+          "$cc/bin/cc" -dumpmachine | grep -q musl || { echo "shim compiler is not musl" >&2; exit 1; }
           "$cc/bin/cc" -O2 -Wall -shared -fPIC -o "$RUNNER_TEMP/sigaltstack-amx.so" \
             .github/smoke/sigaltstack-amx.c
           ref=$(docker load -i result | sed -n 's/^Loaded image: //p' | head -n1)

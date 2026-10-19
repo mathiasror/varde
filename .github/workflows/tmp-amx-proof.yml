@@ -26,7 +26,8 @@ jobs:
       - name: Unpatched image must abort under the shim
         run: |
           set -uo pipefail
-          cc=$(nix build --no-link --print-out-paths --inputs-from . 'nixpkgs#pkgsMusl.stdenv.cc')
+          cc=$(nix build --no-link --print-out-paths --inputs-from . 'nixpkgs#pkgsMusl.stdenv.cc^out')
+          "$cc/bin/cc" -dumpmachine | grep -q musl || { echo "shim compiler is not musl" >&2; exit 1; }
           "$cc/bin/cc" -O2 -Wall -shared -fPIC -o "$RUNNER_TEMP/sigaltstack-amx.so" .github/smoke/sigaltstack-amx.c
           img=ghcr.io/mathiasror/varde-rabbitmq:latest-musl-amd64
           echo "-- without shim (control)"
