@@ -33,8 +33,10 @@ jobs:
           echo "-- without shim (control)"
           docker run --rm --entrypoint /runtime/bin/erl "$img" -noshell -eval 'io:format("varde ok~n"), erlang:halt().'
           echo "-- with shim (expect abort)"
-          out=$(docker run --rm -v "$RUNNER_TEMP/sigaltstack-amx.so:/shim.so:ro" -e LD_PRELOAD=/shim.so \
-                  --entrypoint /runtime/bin/erl "$img" -noshell -eval 'io:format("varde ok~n"), erlang:halt().' 2>&1)
-          rc=$?
+          # After the internal error the VM segfaults or spins rather than
+          # aborting cleanly, so match the message, not the exit status.
+          rc=0
+          out=$(timeout -k 5 120 docker run --rm -v "$RUNNER_TEMP/sigaltstack-amx.so:/shim.so:ro" -e LD_PRELOAD=/shim.so \
+                  --entrypoint /runtime/bin/erl "$img" -noshell -eval 'io:format("varde ok~n"), erlang:halt().' 2>&1) || rc=$?
           echo "$out"; echo "exit=$rc"
           [ "$rc" -ne 0 ] && grep -q 'Failed to set alternate signal stack' <<< "$out"
