@@ -397,6 +397,29 @@ jobs:
             vex.openvex.json
           overwrite: true
 
+      # The intermittent e2e "Failed to set alternate signal stack" abort only
+      # reproduced on AMX runners. This fakes one on every runner (see the
+      # shim's header) and boots a bare VM: it fails if the OTP patch stops
+      # applying, and tells us when a nixpkgs erlang no longer needs it.
+      - name: "Regression: musl BEAM boots with AMX-sized signal frames"
+        # amd64 only: the alt stack is an x86 JIT thing (NATIVE_ERLANG_STACK);
+        # arm64 BEAMs never call sigaltstack, so the shim would see nothing.
+        if: matrix.image == 'rabbitmq' && matrix.libc == 'musl' && matrix.arch == 'amd64'
+        run: |
+          set -euo pipefail
+          cc=$(nix build --no-link --print-out-paths --inputs-from . 'nixpkgs#pkgsMusl.stdenv.cc')
+          "$cc/bin/cc" -O2 -Wall -shared -fPIC -o "$RUNNER_TEMP/sigaltstack-amx.so" \
+            .github/smoke/sigaltstack-amx.c
+          ref=$(docker load -i result | sed -n 's/^Loaded image: //p' | head -n1)
+          out=$(docker run --rm -v "$RUNNER_TEMP/sigaltstack-amx.so:/shim.so:ro" \
+                  -e LD_PRELOAD=/shim.so --entrypoint /runtime/bin/erl "$ref" \
+                  -noshell -eval 'io:format("varde ok~n"), erlang:halt().' 2>&1) \
+            || { echo "$out"; echo "BEAM aborted under a simulated AMX host" >&2; exit 1; }
+          echo "$out"
+          grep -q '^sigaltstack-amx: accepted' <<< "$out" \
+            || { echo "shim never saw a sigaltstack call — not loaded?" >&2; exit 1; }
+          grep -q '^varde ok' <<< "$out"
+
       - name: Smoke test (image actually runs)
         env:
           IMAGE: ${{ matrix.image }}
