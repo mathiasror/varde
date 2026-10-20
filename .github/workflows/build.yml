@@ -920,6 +920,14 @@ jobs:
             oras cp -r "$1" "${2%@*}"
             ref_tag="$(printf '%s' "${2#*@}" | tr ':' '-')"
             oras cp "${1%@*}:${ref_tag}" "${2%@*}:${ref_tag}"
+          }
+          # Verified one child at a time, NOT under the parallel xargs: every
+          # cosign / gh attestation call refreshes the sigstore TUF cache in
+          # $HOME, and concurrent refreshes on a fresh runner collide (run
+          # 39408625065: "failed to create tuf updater: failed to persist
+          # metadata" on one child while the other three verified), which this
+          # gate then misreports as a missing signature.
+          verify_one(){
             cosign verify \
               --certificate-identity "https://github.com/${GITHUB_WORKFLOW_REF}" \
               --certificate-oidc-issuer https://token.actions.githubusercontent.com \
@@ -938,9 +946,11 @@ jobs:
               --bundle-from-oci
             echo "verified: signature + cyclonedx + openvex attestations + SLSA provenance on $2 (copied from $1)"
           }
-          export -f copy_one
+          export -f copy_one verify_one
           sort -u "$COPYLIST" -o "$COPYLIST"
           xargs -r -P 4 -n 2 bash -c 'set -euo pipefail; copy_one "$@"' _ < "$COPYLIST" \
+            || { echo "::error::copying an alias child's referrers failed — no manifest tag was moved; re-run this job"; exit 1; }
+          xargs -r -P 1 -n 2 bash -c 'set -euo pipefail; verify_one "$@"' _ < "$COPYLIST" \
             || { echo "::error::an alias child is missing its signature/attestations — no manifest tag was moved; re-run this job"; exit 1; }
 
           SIGNLIST="$RUNNER_TEMP/sign-list"
