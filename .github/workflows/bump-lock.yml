@@ -5,19 +5,42 @@ name: bump-flake-lock
 # published images were built from a lock that existed in no commit: the SLSA
 # provenance pointed at a source revision that could not reproduce the
 # artifacts, and the resolved inputs lived only in a 90-day CI artifact. Here
-# the refreshed lock is committed to main FIRST — via the GraphQL
-# createCommitOnBranch mutation, so the GITHUB_TOKEN commit is GitHub-signed
-# and shows the "Verified" badge — and build.yml is then dispatched on the new
-# head, so the attested source sha contains the exact lock the images are
-# built from.
+# the refreshed lock is committed — via the GraphQL createCommitOnBranch
+# mutation, so the GITHUB_TOKEN commit is GitHub-signed and shows the
+# "Verified" badge — and build.yml is then dispatched on main at that commit,
+# so the attested source sha contains the exact lock the images are built from.
 #
-# The lock commit itself does NOT recursively trigger build.yml's push trigger
-# (whose path filter does match flake.lock): pushes made with the repository
-# GITHUB_TOKEN never create workflow runs. workflow_dispatch is the documented
-# exception ("workflow_dispatch and repository_dispatch events always create
-# workflow runs"), hence the explicit `gh workflow run` — exactly one build.
-# That build's completion then fans out to e2e.yml via its workflow_run
-# trigger, so the examples are checked against the published bases too.
+# Validate, THEN land. The lock used to be committed straight to main and only
+# then built, so a nixpkgs that broke a from-source musl build (sqlite's test
+# suite, Sep 14 – Oct 12 2026: five red weekly publishes in a row) reached main
+# first and stayed red until someone patched it by hand. Now:
+#   1. bump    — commit the new lock to the bump/flake-lock branch (main's head
+#                + the lock, nothing else).
+#   2. verify  — call build.yml (verify_only: full matrix, SBOM + scans, no
+#                sign/push/tag) and e2e.yml on that commit. Builds push to
+#                Cachix, so the real publish afterwards is mostly cache hits.
+#   3. land    — only if both are green: fast-forward main to that exact
+#                verified commit and dispatch the publishing build.yml run.
+# A bad week therefore leaves main (and the published images) on last week's
+# lock with a red run here to look at, instead of a red main. If main moved
+# while verifying, the fast-forward is refused rather than landing a lock
+# verified against a different tree; re-run the workflow (the cache is warm).
+#
+# Commits and ref updates made with GITHUB_TOKEN never create workflow runs
+# (no push-triggered build.yml/e2e.yml for the bump branch or for main).
+# workflow_dispatch is the documented exception ("workflow_dispatch and
+# repository_dispatch events always create workflow runs"), hence the explicit
+# `gh workflow run` — exactly one publish. That dispatched build does NOT fan
+# out to e2e.yml: GitHub raises no workflow_run event for a run started with
+# GITHUB_TOKEN (seen 2026-10-19, run 39297073830). verify-e2e below is the
+# weekly lock's e2e coverage, on the exact commit that then lands.
+#
+# A red verify run is usually a cache-cold week, not a broken lock: the heavy
+# musl legs (jre/php) can hit their 350-minute cap compiling a fresh nixpkgs,
+# and dependency test suites occasionally flake (2026-10-19: one timing test
+# in python3.14-filelock, while the same derivation passed in two sibling
+# legs). Every finished path is already in Cachix, so "Re-run failed jobs" on
+# this run resumes from there, and land runs once everything is green.
 # https://docs.github.com/en/actions/using-workflows/triggering-a-workflow#triggering-a-workflow-from-a-workflow
 
 on:
@@ -26,8 +49,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write # createCommitOnBranch on main
-  actions: write # gh workflow run build.yml
+  contents: read
 
 # Never let a manual dispatch race the cron: one bump at a time, never
 # cancelled mid-commit.
@@ -35,10 +57,19 @@ concurrency:
   group: bump-flake-lock
   cancel-in-progress: false
 
+env:
+  BUMP_BRANCH: bump/flake-lock
+
 jobs:
   bump:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    permissions:
+      contents: write # bump branch ref + createCommitOnBranch
+      actions: write # gh workflow run build.yml (unchanged-lock path)
+    outputs:
+      changed: ${{ steps.commit.outputs.changed }}
+      sha: ${{ steps.commit.outputs.sha }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -63,57 +94,122 @@ jobs:
         # Don't commit a lock that breaks flake evaluation — catch it here
         # instead of as a red dispatched build on main. (Eval only touches the
         # matrix fields, so this stays cheap; build failures are the
-        # dispatched run's job to find.) latestTags throws on a `latest` that
+        # verify jobs' to find.) latestTags throws on a `latest` that
         # names no variant, so that is caught here as well.
         run: nix eval --json .#ciMatrix >/dev/null && nix eval --json .#latestTags >/dev/null
 
-      - name: Commit lock to main (GitHub-signed) and dispatch build
+      - id: commit
+        name: Commit lock to the bump branch (GitHub-signed)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           if git diff --quiet -- flake.lock; then
-            # Still dispatch below: the weekly rebuild also re-scans with a
-            # fresh grype DB and refreshes the Security-tab SARIF, and
-            # republishing identical digests is idempotent — an unchanged
-            # lock must not silently skip the week.
-            echo "flake.lock unchanged — nothing to commit; dispatching the weekly rebuild anyway"
+            # Nothing to verify: main already builds this lock. Still dispatch
+            # the weekly rebuild — it re-scans with a fresh grype DB and
+            # refreshes the Security-tab SARIF, and republishing identical
+            # digests is idempotent — so an unchanged lock never skips a week.
+            echo "flake.lock unchanged — nothing to verify; dispatching the weekly rebuild"
+            echo "changed=false" >> "$GITHUB_OUTPUT"
             gh workflow run build.yml --ref main
             exit 0
           fi
           new_rev=$(jq -r '.nodes.nixpkgs.locked.rev[0:12]' flake.lock)
-          # expectedHeadOid = the sha this job checked out and resolved the
-          # lock against. If main moved meanwhile, the mutation is rejected
-          # instead of committing a stale lock; the next cron (or a manual
-          # dispatch) retries against the new head.
           head=$(git rev-parse HEAD)
-          # createCommitOnBranch with GITHUB_TOKEN: GitHub authors AND signs
-          # the commit ("Commits made using this mutation are automatically
-          # signed by GitHub … marked as verified in the user interface");
-          # file contents must be base64 (FileAddition.contents).
-          #
-          # Ruleset note: "protect main" currently enforces only deletion +
-          # non_fast_forward, so this direct bot commit is allowed. If main
-          # ever gains required status checks or a required-PR rule, this
-          # mutation will start failing and the bump must move to a PR flow.
+          # Point the bump branch at the main commit this lock was resolved
+          # against (force: last week's branch is disposable), then commit the
+          # lock on top. createCommitOnBranch with GITHUB_TOKEN: GitHub authors
+          # AND signs the commit ("Commits made using this mutation are
+          # automatically signed by GitHub … marked as verified in the user
+          # interface"); file contents must be base64 (FileAddition.contents).
+          gh api -X PATCH "repos/$GITHUB_REPOSITORY/git/refs/heads/$BUMP_BRANCH" \
+              -f sha="$head" -F force=true >/dev/null 2>&1 \
+            || gh api -X POST "repos/$GITHUB_REPOSITORY/git/refs" \
+              -f ref="refs/heads/$BUMP_BRANCH" -f sha="$head" >/dev/null
           # shellcheck disable=SC2016 # $repo/$head/… are GraphQL variables, not shell
-          gh api graphql \
+          sha=$(gh api graphql \
             -f query='
-              mutation ($repo: String!, $head: GitObjectID!, $message: String!, $contents: Base64String!) {
+              mutation ($repo: String!, $branch: String!, $head: GitObjectID!, $message: String!, $contents: Base64String!) {
                 createCommitOnBranch(input: {
-                  branch: { repositoryNameWithOwner: $repo, branchName: "main" },
+                  branch: { repositoryNameWithOwner: $repo, branchName: $branch },
                   expectedHeadOid: $head,
                   message: { headline: $message },
                   fileChanges: { additions: [{ path: "flake.lock", contents: $contents }] }
-                }) { commit { oid url } }
+                }) { commit { oid } }
               }' \
             -f repo="$GITHUB_REPOSITORY" \
+            -f branch="$BUMP_BRANCH" \
             -f head="$head" \
             -f message="chore: bump flake.lock (nixpkgs ${new_rev})" \
-            -f contents="$(base64 -w0 flake.lock)"
+            -f contents="$(base64 -w0 flake.lock)" \
+            --jq '.data.createCommitOnBranch.commit.oid')
+          echo "bump commit $sha on $BUMP_BRANCH (parent $head)"
+          {
+            echo "changed=true"
+            echo "sha=$sha"
+          } >> "$GITHUB_OUTPUT"
+
+  verify-build:
+    needs: bump
+    if: needs.bump.outputs.changed == 'true'
+    # A called workflow's jobs can hold at most the caller job's permissions,
+    # so this must list everything build.yml's jobs *declare* — the
+    # verify_only run never signs, pushes, tags or uploads SARIF with them.
+    permissions:
+      contents: read
+      packages: write
+      security-events: write
+      id-token: write
+      actions: read
+      attestations: write
+    uses: ./.github/workflows/build.yml
+    with:
+      ref: ${{ needs.bump.outputs.sha }}
+      verify_only: true
+    secrets: inherit # CACHIX_AUTH_TOKEN: the verify builds warm the cache
+
+  verify-e2e:
+    needs: [bump, verify-build]
+    permissions:
+      contents: read
+    uses: ./.github/workflows/e2e.yml
+    with:
+      ref: ${{ needs.bump.outputs.sha }}
+    secrets: inherit
+
+  land:
+    needs: [bump, verify-build, verify-e2e]
+    # The bump commit's parent is the dispatched ref's head, so landing from
+    # any other ref would fast-forward main onto unmerged branch code. A
+    # dispatch from a branch is therefore a dry run: bump + verify only.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write # fast-forward main
+      actions: write # gh workflow run build.yml
+    steps:
+      - name: Fast-forward main to the verified commit and dispatch the publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SHA: ${{ needs.bump.outputs.sha }}
+        run: |
+          set -euo pipefail
+          # force=false: GitHub rejects anything but a fast-forward. The bump
+          # commit's parent was main's head when the lock was resolved, so this
+          # only fails if main moved during verification — then the verified
+          # tree is not what main would become, and landing it would publish
+          # an unverified combination. Ruleset note: "protect main" enforces
+          # deletion + non_fast_forward only, so this bot update is allowed; a
+          # required-PR or required-checks rule would need a PR flow instead.
+          if ! gh api -X PATCH "repos/$GITHUB_REPOSITORY/git/refs/heads/main" \
+               -f sha="$SHA" -F force=false >/dev/null; then
+            echo "::error::main moved while the bump was verifying; not landing $SHA. Re-run this workflow (Cachix is warm, so it is quick)."
+            exit 1
+          fi
+          echo "main -> $SHA"
           # workflow_dispatch fired with GITHUB_TOKEN DOES create a run (the
-          # documented exception to the no-recursive-triggers rule). The run
-          # resolves refs/heads/main when it starts — the lock commit just
-          # made, or a fast-forward descendant of it (the ruleset forbids
-          # non-fast-forward pushes, so the lock is always in its history).
+          # documented exception to the no-recursive-triggers rule); it
+          # resolves refs/heads/main, i.e. this commit or a descendant.
           gh workflow run build.yml --ref main
+          gh api -X DELETE "repos/$GITHUB_REPOSITORY/git/refs/heads/$BUMP_BRANCH" >/dev/null || true

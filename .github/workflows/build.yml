@@ -23,8 +23,8 @@ name: build-image
 # from a lock that exists in a commit, and the SLSA provenance sha reproduces
 # the build. A shared Cachix cache holds the from-source musl builds so later
 # runs (and the e2e workflow, which workflow_run-chains off every successful
-# main build — a partial publish ends red and is not chained) pull them
-# instead of recompiling.
+# push build on main — a dispatched run never chains, and a partial publish
+# ends red) pull them instead of recompiling.
 
 on:
   push:
@@ -52,6 +52,19 @@ on:
       - ".github/workflows/build.yml"
       - ".github/canary/**"
   workflow_dispatch:
+  # bump-lock.yml calls this with the bumped lock committed to a side branch:
+  # the full matrix builds (warming Cachix) but nothing publishes, and only a
+  # fully green run lets the bump land on main. See the header there.
+  workflow_call:
+    inputs:
+      ref:
+        description: Commit to build (the bump branch head)
+        type: string
+        required: true
+      verify_only:
+        description: Build, SBOM and scan only; never sign, push or tag
+        type: boolean
+        default: true
 
 # Workflow-level default is read-only; each job below grants only what it
 # uses (a job-level block replaces the whole set, so the default still covers
@@ -80,6 +93,11 @@ jobs:
       matrix: ${{ steps.gen.outputs.matrix }}
       latest: ${{ steps.gen.outputs.latest }}
       aliases: ${{ steps.gen.outputs.aliases }}
+      # The one publish gate every sign/push/tag step and the manifest job
+      # checks. A called run inherits the caller's event (schedule/dispatch),
+      # so `event_name != 'pull_request'` alone would publish a bump that has
+      # not landed on main. `inputs.verify_only` is null outside workflow_call.
+      publish: ${{ github.event_name != 'pull_request' && !inputs.verify_only }}
     steps:
       # Publishing is gated on the event type below, so a dispatch from a
       # feature branch would otherwise build AND publish that branch (with a
@@ -88,7 +106,9 @@ jobs:
       # Fail red here rather than silently skip: a mistaken dispatch should be
       # visible, not a green run that published nothing.
       - name: Refuse a dispatch from any ref but main
-        if: github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main'
+        # (A verify_only call publishes nothing, so a bump-lock dry run from a
+        # branch is fine.)
+        if: github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main' && !inputs.verify_only
         env:
           REF: ${{ github.ref }}
         run: |
@@ -99,6 +119,7 @@ jobs:
       # the build job runs unsandboxed Nix apps + docker from the checkout.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ inputs.ref }} # empty outside workflow_call -> the event's ref
           persist-credentials: false
       # `determinate: false` -> plain upstream Nix. The action's default (since v22) installs
       # Determinate Nix and tries a FlakeHub login on every job, which warns
@@ -244,6 +265,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ inputs.ref }} # empty outside workflow_call -> the event's ref
           persist-credentials: false
       - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
         with:
@@ -370,7 +392,8 @@ jobs:
       # `always()` alone spams "Path does not exist" annotations when the build
       # step failed and the SARIF was never written — only upload what exists.
       - name: Upload SBOM SARIF
-        if: ${{ !cancelled() && hashFiles('grype-sbom.sarif') != '' }}
+        # Not from a verify run: it would file the bump's findings under main's sha.
+        if: ${{ !cancelled() && !inputs.verify_only && hashFiles('grype-sbom.sarif') != '' }}
         continue-on-error: true
         uses: github/codeql-action/upload-sarif@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
         with:
@@ -378,7 +401,8 @@ jobs:
           category: sbom-${{ matrix.image }}-${{ matrix.tag }}-${{ matrix.arch }}
 
       - name: Upload image SARIF
-        if: ${{ !cancelled() && hashFiles('trivy-image.sarif') != '' }}
+        # Not from a verify run: it would file the bump's findings under main's sha.
+        if: ${{ !cancelled() && !inputs.verify_only && hashFiles('trivy-image.sarif') != '' }}
         continue-on-error: true
         uses: github/codeql-action/upload-sarif@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
         with:
@@ -507,7 +531,7 @@ jobs:
       # keychain) and attest-build-provenance read, and keeps a mutable-tag
       # action out of the one job that holds the signing identity.
       - name: Log in to GHCR (signing + attestation)
-        if: github.event_name != 'pull_request'
+        if: needs.setup.outputs.publish == 'true'
         env:
           TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ACTOR: ${{ github.actor }}
@@ -527,7 +551,7 @@ jobs:
       # 33391537615 (2026-08-31) cosign's ambient-OIDC fetch then died and
       # varde-node:22-musl-arm64 sat unsigned and unattested for a week.
       - name: Push per-arch image to GHCR (by digest, untagged)
-        if: github.event_name != 'pull_request'
+        if: needs.setup.outputs.publish == 'true'
         env:
           OWNER: ${{ github.repository_owner }}
           ACTOR: ${{ github.actor }}
@@ -560,7 +584,7 @@ jobs:
       # attached to. Recorded in the public Rekor transparency log; verify with
       # `cosign verify` / `cosign verify-attestation` (see the README).
       - name: Sign image + attach SBOM attestation (cosign, keyless)
-        if: github.event_name != 'pull_request'
+        if: needs.setup.outputs.publish == 'true'
         run: |
           # Built once from the pinned tools input; the verify step below
           # reuses it from PATH.
@@ -578,7 +602,7 @@ jobs:
       # invocation) on the same per-arch digest, pushed to GHCR as a referrer so
       # it travels with the image. Verify with `gh attestation verify oci://…`.
       - name: Attest build provenance (SLSA)
-        if: github.event_name != 'pull_request'
+        if: needs.setup.outputs.publish == 'true'
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-name: ${{ env.IMAGE_NAME }}
@@ -595,7 +619,7 @@ jobs:
       # the attest step pushed to GHCR — the copy consumers verify against —
       # not the one in the GitHub attestations API.
       - name: Verify signature + SBOM + provenance before the tag moves
-        if: github.event_name != 'pull_request'
+        if: needs.setup.outputs.publish == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -622,7 +646,7 @@ jobs:
       # --preserve-digests makes skopeo fail rather than re-encode the
       # manifest, so the tag resolves to the exact digest just verified.
       - name: Publish per-arch tag (manifest-only copy of the verified digest)
-        if: github.event_name != 'pull_request'
+        if: needs.setup.outputs.publish == 'true'
         env:
           ACTOR: ${{ github.actor }}
           TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -652,7 +676,7 @@ jobs:
       # once they expire every list is held back and only a fresh dispatch
       # from main recovers (see the README's publish checklist).
       - name: Record the published digest for the manifest job
-        if: github.event_name != 'pull_request'
+        if: needs.setup.outputs.publish == 'true'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: pushed-${{ matrix.image }}-${{ matrix.tag }}-${{ matrix.arch }}
@@ -674,7 +698,7 @@ jobs:
     # finished sign+attest+verify+tag (their digest file arrived), and the run
     # still goes red at the end if any pair was held back. main-only as
     # belt-and-braces to the setup job's dispatch check.
-    if: always() && github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && needs.setup.result == 'success'
+    if: always() && needs.setup.outputs.publish == 'true' && github.ref == 'refs/heads/main' && needs.setup.result == 'success'
     runs-on: ubuntu-latest
     permissions:
       contents: read
