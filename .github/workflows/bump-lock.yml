@@ -30,8 +30,17 @@ name: bump-flake-lock
 # (no push-triggered build.yml/e2e.yml for the bump branch or for main).
 # workflow_dispatch is the documented exception ("workflow_dispatch and
 # repository_dispatch events always create workflow runs"), hence the explicit
-# `gh workflow run` — exactly one publish. That build's completion then fans
-# out to e2e.yml via its workflow_run trigger, as for any main build.
+# `gh workflow run` — exactly one publish. That dispatched build does NOT fan
+# out to e2e.yml: GitHub raises no workflow_run event for a run started with
+# GITHUB_TOKEN (seen 2026-10-19, run 39297073830). verify-e2e below is the
+# weekly lock's e2e coverage, on the exact commit that then lands.
+#
+# A red verify run is usually a cache-cold week, not a broken lock: the heavy
+# musl legs (jre/php) can hit their 350-minute cap compiling a fresh nixpkgs,
+# and dependency test suites occasionally flake (2026-10-19: one timing test
+# in python3.14-filelock, while the same derivation passed in two sibling
+# legs). Every finished path is already in Cachix, so "Re-run failed jobs" on
+# this run resumes from there, and land runs once everything is green.
 # https://docs.github.com/en/actions/using-workflows/triggering-a-workflow#triggering-a-workflow-from-a-workflow
 
 on:

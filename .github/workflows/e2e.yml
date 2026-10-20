@@ -7,15 +7,18 @@ name: e2e-examples
 # compile from source (see build.yml's `heavy` note — a cache-cold run takes
 # hours); Actions minutes are free on public repos.
 #
-# Runs on PRs that touch an input, and — via workflow_run — after every
-# successful build-image run on main (each weekly flake.lock bump, and every
-# merge that rebuilds the images: build.yml's push trigger is path-filtered,
-# so an examples-only merge gets no post-merge run here — its PR-time run is
-# its coverage). The bump commits with GITHUB_TOKEN and so never triggers a
-# push run here; without the chain the examples were never checked against
-# the lock the published bases actually came from. Chaining off the build
-# also means the Cachix cache that run just populated is warm. Note a
-# workflow_run failure emails nobody: the Actions tab is the signal.
+# Runs on PRs that touch an input, via workflow_run after every successful
+# *push* build-image run on main (merges that rebuild the images; build.yml's
+# push trigger is path-filtered, so an examples-only merge gets no post-merge
+# run here — its PR-time run is its coverage), and via workflow_call from
+# bump-lock.yml on the bumped lock BEFORE it lands. The weekly publish itself
+# never chains here: bump-lock dispatches build.yml with GITHUB_TOKEN, and
+# GitHub creates no workflow_run event for a run started that way (seen
+# 2026-10-19: dispatch build 39297073830 succeeded, no e2e run followed; the
+# same held for every weekly dispatch since the trigger was added). That is
+# why the bump verifies e2e itself. Chaining off a build also means the Cachix
+# cache that run just populated is warm. Note a workflow_run failure emails
+# nobody: the Actions tab is the signal.
 on:
   pull_request:
     paths:

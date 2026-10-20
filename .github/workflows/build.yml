@@ -23,8 +23,8 @@ name: build-image
 # from a lock that exists in a commit, and the SLSA provenance sha reproduces
 # the build. A shared Cachix cache holds the from-source musl builds so later
 # runs (and the e2e workflow, which workflow_run-chains off every successful
-# main build — a partial publish ends red and is not chained) pull them
-# instead of recompiling.
+# push build on main — a dispatched run never chains, and a partial publish
+# ends red) pull them instead of recompiling.
 
 on:
   push:
