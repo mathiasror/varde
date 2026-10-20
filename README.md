@@ -402,6 +402,7 @@ version with the libc axis via `vardeLib.mkVariants`:
           ];
           # stopSignal = "SIGQUIT";    # optional: a daemon whose graceful shutdown isn't SIGTERM
           # closureAllow = [ … ];      # optional: EREs on full store paths exempted from the closure guard
+          # strip = false;             # optional: keep ELF symbol tables (stripped at image assembly by default)
         };
       };
     };

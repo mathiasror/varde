@@ -7,15 +7,18 @@
 # latestTags rejects anything else at eval time. Each `spec` is:
 #   { contents ? [], entrypoint, cmd ? null, env ? [], libc, fhs ? false,
 #     stopSignal ? null, sbomExtraComponents ? [ ], sbomStripCpes ? [ ],
-#     closureAllow ? [ ] }
+#     closureAllow ? [ ], strip ? true }
 # `contents` are language-specific store paths merged at image root (e.g. a
 # runtime relocated under /runtime). `libc` ("musl" | "glibc" | null) is set by
 # mkVariants or the base specs below — flake.nix reads it for the CI matrix (and
 # rejects a variant without it at eval) and mkLibcEnv builds the FHS layout from
 # it when `fhs = true`. `stopSignal` maps
 # to the OCI StopSignal for daemons whose clean-shutdown signal isn't SIGTERM
-# (see images/postgres.nix and images/nginx.nix). Everything else below is
-# added for free.
+# (see images/postgres.nix and images/nginx.nix). `strip` (default true)
+# strips ELF symbol tables out of the assembled image (see stripImage below);
+# set `strip = false` for a variant whose binaries must keep .symtab — e.g.
+# one that reads its own symbols at runtime, or that breaks or cannot be
+# vouched for after stripping. Everything else below is added for free.
 { nixpkgs }:
 let
   lib = nixpkgs.lib;
@@ -271,8 +274,27 @@ rec {
         inherit contents;
         allow = spec.closureAllow or [ ];
       };
+      args = imageArgs { inherit name tag contents guard spec description; };
     in
-    pkgs.dockerTools.buildLayeredImage {
+    # strip = false builds exactly the derivation this function built before
+    # stripping existed (same drv, same store path), so opting out is free.
+    if spec.strip or true then
+      stripImage pkgs (pkgs.dockerTools.streamLayeredImage args)
+    else
+      pkgs.dockerTools.buildLayeredImage args;
+
+  # The dockerTools arguments of an image, shared by the stripped
+  # (streamLayeredImage + stripImage) and unstripped (buildLayeredImage) paths.
+  imageArgs =
+    {
+      name,
+      tag,
+      contents,
+      guard,
+      spec,
+      description,
+    }:
+    {
       inherit name tag contents;
       extraCommands = ''
         # Interpolating the closure guard (${guard}) makes it an input of this
@@ -312,6 +334,50 @@ rec {
         StopSignal = spec.stopSignal;
       };
     };
+
+  # buildLayeredImage with ELF symbol tables stripped from the layers: the
+  # stream script's uncompressed docker-archive is piped through
+  # strip-image.py (its header has the details) and gzipped exactly as
+  # buildLayeredImage gzips it, under the same `<name>.tar.gz` output name —
+  # which CI's cachix pushFilter keys on to keep image tarballs out of the
+  # cache — and with the same passthru (imageTag, stream, …).
+  #
+  # Why at assembly time: nixpkgs strips debug info only (-S), leaving
+  # .symtab/.strtab in ~98% of a closure's ELF files, and rebuilding packages
+  # with --strip-all would change every store hash — every glibc variant would
+  # lose cache.nixos.org and compile from source. Rewriting file contents
+  # inside the layer tarballs leaves every store path NAME untouched (RPATHs,
+  # PT_INTERP, symlinks, syft's Nix cataloger all key on names) while keeping
+  # buildLayeredImage's one-layer-per-store-path layout, which a stripped
+  # closure copied in by extraCommands (includeStorePaths = false) would
+  # collapse into a single layer. Measured on the published images: −0.1 MB
+  # (memcached) to −5 MB (mysql) gzipped per image, with syft's component set
+  # (names, versions, CPEs, catalogers) identical before and after —
+  # the version strings its binary classifiers match live in .rodata, which
+  # strip never touches.
+  #
+  # The strip tool and python come from the image's own `pkgs` (glibc set,
+  # cache.nixos.org): build-time only, never in the image closure. The result
+  # is a pure function of the stream and llvm-strip, so images stay
+  # reproducible.
+  stripImage =
+    pkgs: stream:
+    pkgs.runCommand "${baseNameOf stream.imageName}.tar.gz"
+      {
+        inherit (stream) imageName;
+        passthru = stream.passthru // {
+          inherit (stream) imageTag;
+          inherit stream;
+        };
+        nativeBuildInputs = [ pkgs.pigz ];
+      }
+      ''
+        set -o pipefail
+        ${stream} \
+          | ${pkgs.python3.interpreter} -I ${./strip-image.py} \
+              ${pkgs.llvmPackages.bintools-unwrapped}/bin/llvm-strip \
+          | pigz -p"$NIX_BUILD_CORES" -nTR > "$out"
+      '';
 
   # One hand-authored CycloneDX component carrying an exact NVD CPE identity.
   # `product` is the CPE product field (may contain CPE escapes, e.g.
