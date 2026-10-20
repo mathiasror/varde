@@ -87,7 +87,25 @@ let
     let
       # wx-less, systemd-less BEAM (hydra-cached on glibc). The same erlang
       # builds RabbitMQ and ships (pruned) in the image, so beams always match.
-      beamPkgs = p.beamMinimal27Packages;
+      #
+      # musl only: OTP 27 sizes the JIT's alternate signal stack with musl's
+      # static SIGSTKSZ (8192), and musl 1.2.6's sigaltstack() demands
+      # AT_MINSIGSTKSZ + 1 KiB. On AMX runners (Xeon 8573C, AT_MINSIGSTKSZ
+      # 11952) beam aborts at boot: "Failed to set alternate signal stack".
+      # Fixed in OTP 29.1; drop once the maint-27 backport (erlang/otp#11810)
+      # ships in the nixpkgs erlang. glibc sizes SIGSTKSZ dynamically, so it
+      # stays the untouched, hydra-cached build.
+      beamPkgs =
+        if p.stdenv.hostPlatform.isMusl then
+          p.beamMinimal27Packages.overrideScope (
+            _: prev: {
+              erlang = prev.erlang.overrideAttrs (old: {
+                patches = (old.patches or [ ]) ++ [ ./patches/otp-27-musl-sigaltstack-size.patch ];
+              });
+            }
+          )
+        else
+          p.beamMinimal27Packages;
       erlang = beamPkgs.erlang;
 
       rabbitmq =
