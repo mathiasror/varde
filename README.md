@@ -89,7 +89,7 @@ shell-free.
 | TLS | CA bundle at `/etc/ssl/certs/ca-certificates.crt` (`SSL_CERT_FILE` set) |
 | Timezones | tzdata at `/usr/share/zoneinfo` (`TZDIR` set) |
 | Writable paths | `/app`, `/tmp` (sticky) |
-| Scanning | per-image CycloneDX SBOM with NVD CPEs, scanned with grype (see below) |
+| Scanning | per-image CycloneDX SBOM with NVD CPEs, scanned with grype; the signed result is attested on the image (see below) |
 
 The shell/package-manager guarantee is **enforced at build time** by a
 deny-list closure check ([`lib/default.nix`](lib/default.nix)): any image
@@ -168,7 +168,26 @@ List everything that exists: `nix eval --json .#ciMatrix` (each entry carries it
 > extra-trusted-public-keys = varde.cachix.org-1:oUZD/OJtc/pTMrpe/p7Ax/2eLhbphON1O5mWRbvWa84=
 > ```
 
-## Vulnerability scanning (grype)
+## Scanning varde images
+
+> **Trivy, Docker Scout and Snyk report these images clean — that is a false
+> negative, not a clean image.** All three find vulnerabilities through a
+> distro package database (apk/dpkg/rpm) or language-ecosystem package URLs,
+> and none of them knows Nix: Trivy has no Nix ecosystem and skips `pkg:nix`,
+> `pkg:generic` and CPE-only components even in an SBOM you hand it; Docker
+> Scout matches purls only; `snyk container test` reads the OS package
+> database the image does not have. So they see zero packages and report 0
+> vulnerabilities whatever ships (on 2026-10-17, `trivy image` on
+> `varde-postgres:17` found 0 where grype found 40; given a CycloneDX SBOM
+> with a known-vulnerable openssl, trivy still finds nothing). Use grype, or
+> Dependency-Track on the attested SBOM (both below). Trivy remains useful on
+> these images for its secret scanning. Varde does not fake distro package
+> URLs to make them light up. The upstream gap: NixOS has no vulnerability
+> feed with a "fixed" state that Trivy could consume
+> ([aquasecurity/trivy#1673](https://github.com/aquasecurity/trivy/issues/1673),
+> [NixOS/nix-security-tracker#978](https://github.com/NixOS/nix-security-tracker/issues/978)).
+
+### Quick scan: grype on the image
 
 Scan a varde image like any other image — with
 [grype](https://github.com/anchore/grype):
@@ -186,46 +205,96 @@ once you build on top: grype natively reads JARs, `node_modules`, Python
 dist-info, and the build info embedded in **Go binaries** (and Rust binaries
 built with `cargo auditable`).
 
-> **Trivy reports these images clean — that result is wrong.** Trivy finds
-> vulnerabilities only through a distro package database (apk/dpkg/rpm) or
-> language lockfiles; it has no Nix support and no CPE matching, so it sees
-> zero packages in a Nix-built image and reports 0 vulnerabilities whatever
-> ships (on 2026-10-17, `trivy image` on `varde-postgres:17` found 0 where
-> grype found 40). Embedding or attaching an SBOM does not change that: given
-> a CycloneDX SBOM with a known-vulnerable openssl, trivy still finds nothing.
-> Use grype. Trivy remains useful on these images for its secret scanning.
+### The CI-equivalent scan: attested SBOM + VEX
 
 For the most complete result, scan the **attested SBOM** CI publishes with
-every image. It is the same syft inventory plus hand-authored components that
-carry the exact identity NVD files CVEs under (`gnu:glibc`,
-`musl-libc:musl`, `oracle:openjdk`, `python_software_foundation:cpython`, …):
-the Nix cataloger guesses `vendor = product = pname`, and a wrong vendor
-matches nothing, silently. Extract it with the `cosign verify-attestation`
-command under
-[Supply chain](#supply-chain-signatures-sbom--provenance), then:
+every image, with the image's **OpenVEX** applied — exactly what CI runs. The
+SBOM is the same syft inventory plus hand-authored components that carry the
+exact identity NVD files CVEs under (`gnu:glibc`, `musl-libc:musl`,
+`oracle:openjdk`, `python_software_foundation:cpython`, …): the Nix cataloger
+guesses `vendor = product = pname`, and a wrong vendor matches nothing,
+silently. The VEX is explained in the next section.
+
+The attestations live on the **per-arch digests** (the things actually built),
+not on the multi-arch tag, so resolve a platform digest first. Images are
+reproducible, so a digest that did not change between weekly runs collects
+one attestation of each type per run; the `jq -s … max_by` keeps the newest:
 
 ```bash
-grype sbom:sbom.cdx.json
+IMG=ghcr.io/mathiasror/varde-postgres
+d=$(crane digest "$IMG:17" --platform linux/amd64)
+ID=https://github.com/mathiasror/varde/.github/workflows/build.yml@refs/heads/main
+ISSUER=https://token.actions.githubusercontent.com
+
+cosign verify-attestation --type cyclonedx \
+  --certificate-identity "$ID" --certificate-oidc-issuer "$ISSUER" "$IMG@$d" \
+  | jq -s '[.[].payload | @base64d | fromjson | .predicate] | max_by(.metadata.timestamp)' > sbom.cdx.json
+cosign verify-attestation --type openvex \
+  --certificate-identity "$ID" --certificate-oidc-issuer "$ISSUER" "$IMG@$d" \
+  | jq -s '[.[].payload | @base64d | fromjson | .predicate] | max_by(.timestamp)' > vex.openvex.json
+
+grype --vex vex.openvex.json sbom:sbom.cdx.json
 ```
 
-Or generate it from the flake on Linux (fetches the image tarball from the
-cache, or builds it, and reads it):
+Or generate the SBOM from the flake on Linux (fetches the image tarball from
+the cache, or builds it, and reads it):
 
 ```bash
 nix run .#sbom-jre-21-musl -- sbom.cdx.json
 grype sbom:sbom.cdx.json
 ```
 
+### CI's own result: the vulnerability-scan attestation
+
 CI scans every image's SBOM with grype on every build, guarded by a known-CVE
 canary fixture: if grype ever parses the fixture to zero findings (a broken
 scanner or DB), the build fails instead of every image reporting clean.
-Findings are in the build log and the SBOM is uploaded as a build artifact.
 Scanning is **report-only** for these base images (so they publish with their
 findings visible); enforce hard gates in your *app* image, where you control
 the dependency set. CPE matching of Nix store contents against NVD is
 best-effort, and it compares upstream versions — a CVE nixpkgs fixed with a
 patch still shows until the version moves — so expect occasional false
-positives and misses compared to a distro package database.
+positives and misses compared to a distro package database. Findings are in
+the build log, in a build artifact (with the SBOM and VEX), and on the image
+itself.
+
+Each per-arch image carries CI's grype result as a signed
+**vulnerability-scan attestation** (cosign's
+[`vuln` predicate](https://github.com/sigstore/cosign/blob/main/specs/COSIGN_VULN_ATTESTATION_SPEC.md),
+`https://cosign.sigstore.dev/attestation/vuln/v1`): the grype version, the
+vulnerability-DB version and build time, the run that scanned, and grype's
+full JSON output (`matches`, plus the VEX-suppressed `ignoredMatches`). It is
+a **point-in-time snapshot** — findings as of that DB build, not a live
+verdict; CVEs published since then are not in it, so rescan (above) for
+today's view. With `$IMG`, `$d`, `$ID` and `$ISSUER` from the previous block:
+
+```bash
+cosign verify-attestation --type vuln \
+  --certificate-identity "$ID" --certificate-oidc-issuer "$ISSUER" "$IMG@$d" \
+  | jq -s '[.[].payload | @base64d | fromjson | .predicate] | max_by(.metadata.scanFinishedOn)' > vuln.json
+jq '{scanned: .metadata.scanFinishedOn, grype: .scanner.version, db: .scanner.db.version,
+     matches: (.scanner.result.matches | length),
+     vex_suppressed: (.scanner.result.ignoredMatches | length)}' vuln.json
+jq -r '.scanner.result.matches[] | "\(.vulnerability.id) \(.vulnerability.severity) \(.artifact.name)@\(.artifact.version)"' vuln.json
+```
+
+### Dependency-Track
+
+[Dependency-Track](https://dependencytrack.org/) works from the attested
+CycloneDX SBOM: its NVD analyzer matches the components' CPEs, so it sees what
+grype sees and keeps re-evaluating the SBOM as new CVEs arrive. Upload the
+`sbom.cdx.json` extracted above (`DT_URL` and an API key with BOM upload
+permission are your instance's):
+
+```bash
+curl -fsS -X POST "$DT_URL/api/v1/bom" -H "X-Api-Key: $DT_API_KEY" \
+  -F autoCreate=true -F projectName=varde-postgres -F projectVersion=17-amd64 \
+  -F bom=@sbom.cdx.json
+```
+
+Dependency-Track imports CycloneDX VEX, not OpenVEX, so the varde OpenVEX
+statements are not applied there; triage those findings against
+`vex.openvex.json` (or `vex/statements.nix`) by hand.
 
 ### False positives and the OpenVEX attestation
 
@@ -237,15 +306,11 @@ statement for every CVE a nixpkgs patch in the image is named after, plus the
 hand-reviewed `not_affected` and `fixed` statements in
 [`vex/statements.nix`](vex/statements.nix), each with its evidence. It is
 generated from the same commit as the image ([`lib/vex.nix`](lib/vex.nix)),
-and CI's scan applies it. To apply it yourself:
+and CI's scan applies it. To apply it yourself, extract it as in
+[the CI-equivalent scan](#the-ci-equivalent-scan-attested-sbom--vex), then:
 
 ```bash
-IMG=ghcr.io/mathiasror/varde-postgres:17
-cosign verify-attestation --type openvex \
-  --certificate-identity https://github.com/mathiasror/varde/.github/workflows/build.yml@refs/heads/main \
-  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-  "$IMG" | jq -r '.payload | @base64d | fromjson | .predicate' > vex.openvex.json
-grype --vex vex.openvex.json sbom:sbom.cdx.json   # or: grype --vex vex.openvex.json "$IMG"
+grype --vex vex.openvex.json sbom:sbom.cdx.json   # or: grype --vex vex.openvex.json "$IMG@$d"
 ```
 
 grype moves VEX-covered matches to `ignoredMatches` (see `-o json`) rather than
@@ -263,11 +328,13 @@ document. A statement is varde's claim, not upstream's, so review
 Every published image is **keyless-signed** with [cosign](https://docs.sigstore.dev/)
 using the GitHub Actions OIDC identity — no long-lived keys — and each per-arch
 image carries a **CycloneDX SBOM attestation** (the closure SBOM above, attached
-to the image so it travels with it, not just a CI artifact) and a **SLSA
+to the image so it travels with it, not just a CI artifact), the **OpenVEX** and
+**vulnerability-scan** attestations described under
+[Scanning varde images](#scanning-varde-images), and a **SLSA
 build-provenance attestation** (builder, source commit, invocation). Signatures
 and attestations are recorded in the public Rekor transparency log; the multi-arch
 manifest lists are signed too, so verifying by tag works. Per-arch tags are
-moved onto a digest only *after* its signature and all three attestations are
+moved onto a digest only *after* its signature and all four attestations are
 attached and verified, so a tag never points at an unsigned image. The
 `varde-go` / `varde-rust` aliases get the per-arch signature and attestations
 copied into their own repo (and re-verified there) before their lists are
@@ -284,8 +351,8 @@ cosign verify \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   ghcr.io/mathiasror/varde-jre:21
 
-# Provenance and SBOM attestations live on the per-arch digests (the things
-# actually built) — resolve a platform digest first:
+# Provenance, SBOM, VEX and vuln-scan attestations live on the per-arch
+# digests (the things actually built) — resolve a platform digest first:
 d=$(crane digest ghcr.io/mathiasror/varde-jre:21 --platform linux/amd64)
 
 # Verify SLSA build provenance (same exact identity; --bundle-from-oci reads
@@ -296,13 +363,18 @@ gh attestation verify "oci://ghcr.io/mathiasror/varde-jre@${d}" \
   --cert-identity https://github.com/mathiasror/varde/.github/workflows/build.yml@refs/heads/main \
   --bundle-from-oci
 
-# Verify the CycloneDX SBOM attestation (and extract the SBOM):
+# Verify the CycloneDX SBOM attestation and extract the SBOM (a digest that
+# survived several weekly runs carries one per run; keep the newest):
 cosign verify-attestation --type cyclonedx \
   --certificate-identity https://github.com/mathiasror/varde/.github/workflows/build.yml@refs/heads/main \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   "ghcr.io/mathiasror/varde-jre@${d}" \
-  | jq -r '.payload | @base64d | fromjson | .predicate' > sbom.cdx.json
+  | jq -s '[.[].payload | @base64d | fromjson | .predicate] | max_by(.metadata.timestamp)' > sbom.cdx.json
 ```
+
+The same `cosign verify-attestation` with `--type openvex` or `--type vuln`
+verifies the other two; [Scanning varde images](#scanning-varde-images) shows
+how to extract and use them.
 
 ## CI
 
