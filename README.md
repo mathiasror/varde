@@ -86,7 +86,7 @@ shell-free.
 | User | `1000:1000` (`app`, non-root) |
 | Working directory | `/app` (owned by `1000:1000`) |
 | Shell / package manager | **none** |
-| TLS | CA bundle at `/etc/ssl/certs/ca-certificates.crt` (`SSL_CERT_FILE` set) |
+| TLS | CA bundle at `/etc/ssl/certs/ca-certificates.crt` (`SSL_CERT_FILE` set): nixpkgs' Mozilla-derived `cacert` minus the roots varde distrusts (currently the eMudhra/Sectigo roots behind the October 2026 intermediate key compromise; a build check proves the compromised chains are rejected, see [`lib/distrust`](lib/distrust)). Node reads this bundle, and the JRE's `cacerts` is generated from it |
 | Timezones | tzdata at `/usr/share/zoneinfo` (`TZDIR` set) |
 | Writable paths | `/app`, `/tmp` (sticky) |
 | Scanning | per-image CycloneDX SBOM with NVD CPEs, scanned with grype; the signed result is attested on the image (see below) |
