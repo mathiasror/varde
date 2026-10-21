@@ -4,8 +4,9 @@ name: build-image
 # native amd64 + arm64 runners — scans each with grype (system packages + runtime
 # via the SBOM's CPEs, guarded by a known-CVE canary) plus a Trivy secret scan
 # (Trivy cannot see Nix packages, so it is not a vulnerability scanner here), pushes each per-arch image to GHCR by digest,
-# keyless-signs it and attaches a CycloneDX SBOM + SLSA build-provenance
-# attestation (cosign + GitHub OIDC), verifies all of that, and only THEN moves
+# keyless-signs it and attaches a CycloneDX SBOM, OpenVEX, grype vulnerability-
+# scan (cosign `vuln`) and SLSA build-provenance attestation (cosign + GitHub
+# OIDC), verifies all of that, and only THEN moves
 # the per-arch tag onto the digest — so a documented tag never points at an
 # unsigned image. The manifest job stitches multi-arch + :latest manifest lists
 # from those verified digests, per image:tag pair, under the same discipline
@@ -360,8 +361,10 @@ jobs:
           # not_affected out of the table and the SARIF. They still land in
           # the JSON's ignoredMatches, and the step lists them below, so
           # nothing is hidden from the log.
+          scan_started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
           nix run --inputs-from . nixpkgs-tools#grype -- --vex vex.openvex.json \
             -o table -o sarif=grype-sbom.sarif -o json="$RUNNER_TEMP/grype.json" sbom:sbom.cdx.json
+          scan_finished=$(date -u +%Y-%m-%dT%H:%M:%SZ)
           echo "Suppressed by VEX (reasons in vex.openvex.json):"
           jq -r '.ignoredMatches[]? | "  \(.vulnerability.id) \(.artifact.name)@\(.artifact.version): \(.appliedIgnoreRules[0]["vex-status"])"' \
             "$RUNNER_TEMP/grype.json" | sort -u
@@ -372,6 +375,41 @@ jobs:
           jq --arg uri "images/${IMAGE}.nix" \
             '(.runs[0].results[]?.locations[]?.physicalLocation.artifactLocation.uri) |= (if . == "" or . == "/" then $uri else . end)' \
             grype-sbom.sarif > grype-sbom.sarif.tmp && mv grype-sbom.sarif.tmp grype-sbom.sarif
+          # Wrap THIS run's grype JSON (matches + the VEX-suppressed
+          # ignoredMatches) in cosign's vuln predicate
+          # (sigstore/cosign specs/COSIGN_VULN_ATTESTATION_SPEC.md); the sign
+          # step attaches it as a `cosign attest --type vuln` attestation. It
+          # is a point-in-time snapshot: the findings are only as current as
+          # the grype DB build recorded in scanner.db.version, and they go
+          # stale as new CVEs are published — rescan (see the README) for
+          # today's view. Built here, unconditionally, so a pinned-grype bump
+          # that changes the JSON shape fails on the PR / bump verify run,
+          # not mid-publish. cosign keeps only the spec's fields, so the DB
+          # build time rides in db.version (the full DB status stays in
+          # result.descriptor.db). Findings never fail this step; a missing
+          # descriptor field does.
+          jq -c \
+            --arg started "$scan_started" --arg finished "$scan_finished" \
+            --arg uri "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/attempts/${GITHUB_RUN_ATTEMPT}" \
+            --arg run "$GITHUB_RUN_ID" --arg builder "https://github.com/${GITHUB_WORKFLOW_REF}" '
+            (.descriptor.db.status // error("grype JSON has no .descriptor.db.status")) as $db
+            | {
+                invocation: {
+                  parameters: ["--vex", "vex.openvex.json", "sbom:sbom.cdx.json"],
+                  uri: $uri, event_id: $run, "builder.id": $builder
+                },
+                scanner: {
+                  uri: "https://github.com/anchore/grype",
+                  version: (.descriptor.version // error("grype JSON has no .descriptor.version")),
+                  db: {
+                    uri: ($db.from // error("grype JSON has no DB source")),
+                    version: "\($db.schemaVersion // error("no DB schemaVersion")) built \($db.built // error("no DB build time"))"
+                  },
+                  result: .
+                },
+                metadata: {scanStartedOn: $started, scanFinishedOn: $finished}
+              }' "$RUNNER_TEMP/grype.json" > vuln.predicate.json
+          echo "vuln predicate: $(jq -r '"grype \(.scanner.version), DB \(.scanner.db.version), \(.scanner.result.matches | length) matches, \(.scanner.result.ignoredMatches | length) VEX-suppressed"' vuln.predicate.json)"
 
       - name: "Trivy: secrets in the image filesystem"
         run: |
@@ -419,6 +457,7 @@ jobs:
           path: |
             sbom.cdx.json
             vex.openvex.json
+            vuln.predicate.json
           overwrite: true
 
       # The intermittent e2e "Failed to set alternate signal stack" abort only
@@ -578,12 +617,16 @@ jobs:
             echo "IMAGE_REF=${img}@${digest}"
           } >> "$GITHUB_ENV"
 
-      # Keyless (GitHub OIDC) signature + a CycloneDX SBOM attestation on the
-      # just-pushed per-arch digest. The SBOM is this arch's exact Nix closure
-      # (system packages + runtime), so the attestation matches the image it's
-      # attached to. Recorded in the public Rekor transparency log; verify with
-      # `cosign verify` / `cosign verify-attestation` (see the README).
-      - name: Sign image + attach SBOM attestation (cosign, keyless)
+      # Keyless (GitHub OIDC) signature + CycloneDX SBOM, OpenVEX and grype
+      # vuln-scan attestations on the just-pushed per-arch digest. The SBOM is
+      # this arch's exact Nix closure (system packages + runtime), so the
+      # attestation matches the image it's attached to; the vuln attestation
+      # is the grype step's result for that SBOM with that VEX applied, as of
+      # this run's DB (a snapshot, not a live verdict — a later run on the
+      # same reproducible digest adds a newer one beside it). Recorded in the
+      # public Rekor transparency log; verify with `cosign verify` /
+      # `cosign verify-attestation` (see the README).
+      - name: Sign image + attach SBOM, VEX and vuln-scan attestations (cosign, keyless)
         if: needs.setup.outputs.publish == 'true'
         run: |
           # Built once from the pinned tools input; the verify step below
@@ -597,6 +640,7 @@ jobs:
           retry "$RUNNER_TEMP/cosign/bin/cosign" sign --yes "$IMAGE_REF"
           retry "$RUNNER_TEMP/cosign/bin/cosign" attest --yes --type cyclonedx --predicate sbom.cdx.json "$IMAGE_REF"
           retry "$RUNNER_TEMP/cosign/bin/cosign" attest --yes --type openvex --predicate vex.openvex.json "$IMAGE_REF"
+          retry "$RUNNER_TEMP/cosign/bin/cosign" attest --yes --type vuln --predicate vuln.predicate.json "$IMAGE_REF"
 
       # SLSA build-provenance attestation (structured: builder, source commit,
       # invocation) on the same per-arch digest, pushed to GHCR as a referrer so
@@ -617,8 +661,12 @@ jobs:
       # is the README's `gh attestation verify` (gh is preinstalled and reads
       # the docker login above); --bundle-from-oci makes it read the referrer
       # the attest step pushed to GHCR — the copy consumers verify against —
-      # not the one in the GitHub attestations API.
-      - name: Verify signature + SBOM + provenance before the tag moves
+      # not the one in the GitHub attestations API. The image digest is
+      # reproducible, so earlier runs' vuln attestations sit on it too and
+      # would satisfy a bare verify-attestation even if this run's never
+      # landed: that check also requires one whose invocation.uri is this run
+      # attempt.
+      - name: Verify signature + SBOM + VEX + vuln scan + provenance before the tag moves
         if: needs.setup.outputs.publish == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
@@ -635,11 +683,20 @@ jobs:
             --certificate-identity "https://github.com/${GITHUB_WORKFLOW_REF}" \
             --certificate-oidc-issuer https://token.actions.githubusercontent.com \
             "$IMAGE_REF" >/dev/null
+          # No pipefail in the default shell, but a failed verify leaves jq an
+          # empty stream, so `any` is false and -e fails the step either way.
+          cosign verify-attestation --type vuln \
+            --certificate-identity "https://github.com/${GITHUB_WORKFLOW_REF}" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            "$IMAGE_REF" \
+            | jq -se --arg uri "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/attempts/${GITHUB_RUN_ATTEMPT}" \
+                'any(.[]; .payload | @base64d | fromjson | .predicate.invocation.uri == $uri)' >/dev/null \
+            || { echo "no verified vuln attestation from this run on $IMAGE_REF" >&2; exit 1; }
           gh attestation verify "oci://${IMAGE_REF}" \
             --repo "$GITHUB_REPOSITORY" \
             --cert-identity "https://github.com/${GITHUB_WORKFLOW_REF}" \
             --bundle-from-oci
-          echo "verified: signature + cyclonedx + openvex attestations + SLSA provenance on $IMAGE_REF"
+          echo "verified: signature + cyclonedx + openvex + vuln attestations + SLSA provenance on $IMAGE_REF"
 
       # Every blob already exists in the repo, so this is one manifest PUT:
       # the tag flips atomically from its previous (signed) digest to this one.
@@ -892,10 +949,13 @@ jobs:
           xargs -P 8 -n 3 bash -c 'set -euo pipefail; create_one "$@"' _ < "$planfile"
 
           # Copy each alias child's referrers (cosign signature bundle,
-          # CycloneDX attestation bundle, SLSA provenance bundle) from the
-          # source repo into the alias repo, then gate on the same three
-          # checks the build job runs before a per-arch tag moves — now
-          # against the ALIAS repo, so the copy is exercised, not assumed.
+          # CycloneDX, OpenVEX and vuln-scan attestation bundles, SLSA
+          # provenance bundle) from the source repo into the alias repo, then
+          # gate on the same checks the build job runs before a per-arch tag
+          # moves — now against the ALIAS repo, so the copy is exercised, not
+          # assumed. (The vuln check here is presence + identity only: the
+          # this-run invocation.uri check already passed in the source repo,
+          # and the copy carries the source's full referrer set.)
           # `oras cp -r` copies the manifest plus its referrer manifests; the
           # destination is the bare repo, so the child lands by digest with no
           # tag. That alone is NOT enough on GHCR: it has no referrers API
@@ -906,7 +966,9 @@ jobs:
           # the fallback-index update (run 39033621049: varde-go had no
           # sha256-<hex> tag, every alias child failed `cosign verify` with
           # "no signatures found"). So copy that index tag explicitly too,
-          # after the child; it lists exactly the source's bundles.
+          # after the child; it lists exactly the source's bundles — every
+          # predicate type, so a new attestation type rides along with no
+          # change here (only the verify list below needs it added).
           # `cosign copy` is NOT a substitute: it does not carry
           # the referrer bundles cosign 3.x / attest-build-provenance push
           # (tried: the alias still failed `cosign verify` afterwards).
@@ -940,11 +1002,15 @@ jobs:
               --certificate-identity "https://github.com/${GITHUB_WORKFLOW_REF}" \
               --certificate-oidc-issuer https://token.actions.githubusercontent.com \
               "$2" >/dev/null
+            cosign verify-attestation --type vuln \
+              --certificate-identity "https://github.com/${GITHUB_WORKFLOW_REF}" \
+              --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+              "$2" >/dev/null
             gh attestation verify "oci://$2" \
               --repo "$GITHUB_REPOSITORY" \
               --cert-identity "https://github.com/${GITHUB_WORKFLOW_REF}" \
               --bundle-from-oci
-            echo "verified: signature + cyclonedx + openvex attestations + SLSA provenance on $2 (copied from $1)"
+            echo "verified: signature + cyclonedx + openvex + vuln attestations + SLSA provenance on $2 (copied from $1)"
           }
           export -f copy_one verify_one
           sort -u "$COPYLIST" -o "$COPYLIST"

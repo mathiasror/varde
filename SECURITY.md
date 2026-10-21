@@ -27,16 +27,19 @@ Node.js, glibc, and so on) using Nix. Two different kinds of findings:
   is traceable to a commit that reproduces it (a build leg that fails holds
   back only that image:tag's manifest lists, not the whole weekly refresh, and
   the run goes red naming them). Scan any image yourself with
-  `grype <image>`, or grype its attested CycloneDX SBOM (see the README). Trivy
-  cannot see Nix packages and reports these images clean — don't rely on it. A fix ultimately
+  `grype <image>`, or grype its attested CycloneDX SBOM with its OpenVEX
+  applied, or read CI's attested scan result (see **Scanning varde images** in
+  the README). Trivy, Docker Scout and Snyk cannot see Nix packages and report
+  these images clean — don't rely on them. A fix ultimately
   belongs upstream/in nixpkgs; you're still welcome to flag one here if an
   image is lagging.
 
 ## Verifying what you pulled
 
 Published images are keyless-signed with cosign (Sigstore, via GitHub Actions
-OIDC) and carry a CycloneDX SBOM attestation and a SLSA build-provenance
-attestation. The only identity that signs is
+OIDC) and carry CycloneDX SBOM, OpenVEX, vulnerability-scan (a point-in-time
+grype result) and SLSA build-provenance attestations. The only identity that
+signs is
 `https://github.com/mathiasror/varde/.github/workflows/build.yml@refs/heads/main`
 — publishing is refused from any other ref — and a per-arch tag is moved onto
 a digest only after its signature and attestations are attached and verified.
