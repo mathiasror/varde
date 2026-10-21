@@ -23,15 +23,53 @@ let
   # musl set resolves temurin-jre-bin-* to Temurin's Alpine/musl prebuilt.
   jreSpec = p: jre: {
     contents = [
-      (p.runCommand "varde-jre-root-${jre.version}" { } ''
-        mkdir -p "$out"
-        # Resolve the real JRE home (handles flat or nested nixpkgs layouts) so
-        # /runtime is a self-contained Java home with java at /runtime/bin/java.
-        # Symlink, don't copy: the closure ships the store path either way, and
-        # a copy would double the JRE payload in the image (see lib relocate).
-        home="$(dirname "$(dirname "$(readlink -f ${jre}/bin/java)")")"
-        ln -s "$home" "$out/runtime"
-      '')
+      # /runtime is a self-contained COPY of the Java home (java at
+      # /runtime/bin/java), not a symlink to it, so varde can own its trust:
+      # Temurin's lib/security/cacerts is OpenJDK's CA list, frozen at each
+      # release and blind to cacert's distrusts (it still trusted the
+      # compromised eMudhra `emSign ECC Root CA - G3`). The copy gets the
+      # store lib/default.nix mkJavaTrustStore builds from varde's CA bundle
+      # instead, so java, keytool and any entrypoint a user picks trust
+      # exactly what every other varde runtime trusts (Java finds its home
+      # from the real path of the running binary, i.e. this copy).
+      #
+      # Why here and not in the Temurin override below: changing that
+      # derivation rebuilds it, and its build inputs (cups -> gnutls on musl)
+      # are in no cache — a from-source chain whose gnutls test suite fails.
+      # A copy only reads the cached output. The catch is the payload: the
+      # ELFs' RPATHs name the original home, which would drag it into the
+      # closure and ship the JRE twice, so they are rewritten to the copy and
+      # disallowedReferences turns any leftover reference into a red build.
+      (p.runCommand "varde-jre-root-${jre.version}"
+        {
+          nativeBuildInputs = [ pkgs.buildPackages.patchelf ];
+          disallowedReferences = [ jre ];
+        }
+        ''
+          # Resolve the real JRE home (handles flat or nested nixpkgs layouts).
+          home="$(dirname "$(dirname "$(readlink -f ${jre}/bin/java)")")"
+          mkdir -p "$out"
+          cp -a "$home" "$out/runtime"
+          chmod -R u+w "$out/runtime"
+          # Nix build-time metadata (a setup hook exporting the original
+          # JAVA_HOME); nothing in a container reads it.
+          rm -rf "$out/runtime/nix-support"
+          find "$out/runtime" -type f | while IFS= read -r f; do
+            rp="$(patchelf --print-rpath "$f" 2>/dev/null)" || continue
+            case "$rp" in *"$home"*) patchelf --set-rpath "''${rp//"$home"/$out/runtime}" "$f" ;; esac
+          done
+          find "$out/runtime" -type l | while IFS= read -r l; do
+            t="$(readlink "$l")"
+            case "$t" in "$home"*) ln -sfn "$out/runtime''${t#"$home"}" "$l" ;; esac
+          done
+          cacerts="$(find "$out/runtime" -path '*/lib/security/cacerts' -type f)"
+          if [ -z "$cacerts" ] || [ "$(printf '%s\n' "$cacerts" | wc -l)" != 1 ]; then
+            echo "expected exactly one lib/security/cacerts in the JRE, found: ''${cacerts:-none}" >&2
+            exit 1
+          fi
+          install -m 0444 ${vardeLib.mkJavaTrustStore pkgs} "$cacerts"
+        ''
+      )
     ];
     entrypoint = [ "/runtime/bin/java" ];
     cmd = [

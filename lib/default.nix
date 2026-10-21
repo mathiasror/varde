@@ -38,13 +38,116 @@ rec {
       printf 'hosts: files dns\n' > "$out/etc/nsswitch.conf"
     '';
 
-  # CA bundle at the conventional path (HTTPS for Go/Rust/Python/Node).
+  # --- CA trust -------------------------------------------------------------
+
+  # NSS labels of roots varde distrusts on top of nixpkgs' cacert — the list
+  # NixOS's own security.pki module carries (nixpkgs#576390), for images that
+  # never see NixOS. The eMudhra intermediate key compromise (Oct 2026,
+  # https://emudhra.we-have-a-problem.com/, Mozilla bug 2083449): eight
+  # intermediates whose private keys are recoverable from their certificates,
+  # each issued under `emSign ECC Root CA - G3` AND cross-signed by Sectigo's
+  # `AAA Certificate Services` ("Comodo AAA Services root" in NSS; Mozilla
+  # already trusts it for email only, but CVE-2026-111943 — and every bundle
+  # consumer that ignores OpenSSL trust rules — is why NixOS drops it
+  # entirely). NSS 3.131.1 removes the three emSign roots itself, and
+  # buildcatrust fails (exit 3) on a blocklisted label the store no longer
+  # has, so those three apply only below that version: the weekly bump that
+  # brings 3.131.1 retires them on its own, and checkDistrust below proves
+  # the upstream bundle still rejects the chains.
+  distrustedRoots =
+    cacert:
+    [ "Comodo AAA Services root" ]
+    ++ lib.optionals (lib.versionOlder cacert.version "3.131.1") [
+      "emSign ECC Root CA - G3"
+      "emSign Root CA - C1"
+      "emSign ECC Root CA - C3"
+    ];
+
+  mkCacert = pkgs: pkgs.cacert.override { blacklist = distrustedRoots pkgs.cacert; };
+
+  # Fails unless varde's trust really rejects the compromised chains in
+  # ./distrust (public certificates; provenance in its README). Each chain is
+  # first verified against its own root alone — it must pass, proving the
+  # fixture is valid and the check can see it — then against `bundles`, where
+  # it must fail. A typo'd label in distrustedRoots is a silent no-op to
+  # cacert; this turns it into a red build. -no_check_time: a leaf expiring
+  # must never make the check pass vacuously.
+  checkDistrust =
+    pkgs: bundles:
+    pkgs.runCommand "varde-distrust-check" { nativeBuildInputs = [ pkgs.openssl ]; } ''
+      d=${./distrust}
+      verify() { openssl verify -purpose sslserver -no_check_time "$@" >/dev/null 2>&1; }
+      for pair in emsign:emsign-ecc-root-ca-g3 aaa:aaa-certificate-services; do
+        chain="''${pair%%:*}" root="''${pair#*:}"
+        verify -CAfile "$d/$root.pem" -untrusted "$d/$chain-intermediates.pem" "$d/$chain-leaf.pem" \
+          || { echo "distrust check: fixture '$chain' does not verify against its own root" >&2; exit 1; }
+        for b in ${lib.escapeShellArgs bundles}; do
+          if verify -CAfile "$b" -untrusted "$d/$chain-intermediates.pem" "$d/$chain-leaf.pem"; then
+            echo "distrust check: $b still trusts the compromised '$chain' chain" >&2
+            exit 1
+          fi
+        done
+        echo "distrust check: '$chain' chain rejected by every bundle"
+      done
+      touch "$out"
+    '';
+
+  # CA bundle at the conventional path (HTTPS for Go/Rust/Python/Node — node
+  # is built with --openssl-use-def-ca-store, so it reads this too, not its
+  # compiled-in roots).
   mkCerts =
     pkgs:
+    let
+      cacert = mkCacert pkgs;
+      certs = "${cacert}/etc/ssl/certs";
+      check = checkDistrust pkgs [
+        "${certs}/ca-bundle.crt"
+        "${certs}/ca-no-trust-rules-bundle.crt"
+      ];
+    in
     pkgs.runCommand "varde-certs" { } ''
+      # Interpolating the distrust check (${check}) makes it an input: no
+      # image builds unless its bundle rejects the compromised chains.
       mkdir -p "$out/etc/ssl/certs"
-      ln -s ${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt "$out/etc/ssl/certs/ca-certificates.crt"
+      ln -s ${certs}/ca-bundle.crt "$out/etc/ssl/certs/ca-certificates.crt"
     '';
+
+  # PKCS12 trust store for JREs that ship their own (Temurin's lib/security/
+  # cacerts is the CA list of the OpenJDK source, frozen at release — it
+  # still held `emSign ECC Root CA - G3` after NSS dropped it). Built from
+  # cacert's server-auth-only bundle, NOT ca-bundle.crt: keytool ignores
+  # OpenSSL trust rules, so an email-only root there would become a TLS root
+  # in Java. Unencrypted and MAC-less like upstream's cacerts, because the
+  # JDK opens it without a password. The keytool is the build host's; the
+  # format is plain PKCS12, readable by every JRE varde ships (17+).
+  mkJavaTrustStore =
+    pkgs:
+    let
+      bundle = "${mkCacert pkgs}/etc/ssl/certs/ca-no-trust-rules-bundle.crt";
+    in
+    pkgs.runCommand "varde-java-cacerts"
+      {
+        nativeBuildInputs = [ pkgs.buildPackages.jdk_headless ];
+        # The same proof as the PEM bundle, against the exact input.
+        check = checkDistrust pkgs [ bundle ];
+      }
+      ''
+        # One file per certificate, named after the NSS label printed above it.
+        awk '/^-----BEGIN CERTIFICATE-----/ { n++; f = sprintf("cert-%03d.pem", n); print label > (f ".label") }
+             f { print > f }
+             /^-----END CERTIFICATE-----/ { close(f); f = "" }
+             !/^-----/ && !f && NF { label = $0 }' ${bundle}
+        for c in cert-*.pem; do
+          alias="$(tr 'A-Z' 'a-z' < "$c.label" | tr -cs 'a-z0-9' '_' | sed 's/_$//')_''${c//[!0-9]/}"
+          keytool -J-Dkeystore.pkcs12.certProtectionAlgorithm=NONE -J-Dkeystore.pkcs12.macAlgorithm=NONE \
+            -importcert -noprompt -storetype PKCS12 -keystore "$out" -storepass changeit \
+            -alias "$alias" -file "$c" >/dev/null
+        done
+        want=$(ls cert-*.pem | wc -l)
+        got=$(keytool -list -storetype PKCS12 -keystore "$out" -storepass changeit | grep -c trustedCertEntry)
+        [ "$want" = "$got" ] || { echo "java trust store: $got entries, bundle has $want" >&2; exit 1; }
+        echo "java trust store: $got roots from ${bundle}"
+      '';
 
   # Timezone database at the conventional path.
   mkTz =
