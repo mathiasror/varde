@@ -75,10 +75,14 @@ The build is data-driven so that images are described, not wired up by hand.
   `{ description; latest?; variants = vardeLib.mkVariants pkgs { versions = …; }; }`
   where each version's `spec` is `libcPkgs: { contents ? [], entrypoint, cmd ? null,
   env ? [], fhs ? false, stopSignal ? null, sbomExtraComponents ? [ ],
-  closureAllow ? [ ] }` — `libc` is set by `mkVariants` (or the base specs),
-  not by the module; `sbomExtraComponents` carries the runtime's NVD CPE
-  identity (see below), `stopSignal` a daemon's non-SIGTERM graceful-shutdown
-  signal (postgres, nginx), `closureAllow` a closure-guard exemption. `latest`
+  closureAllow ? [ ], strip ? true }` — `libc` is set by `mkVariants` (or the
+  base specs), not by the module; `sbomExtraComponents` carries the runtime's
+  NVD CPE identity (see below), `stopSignal` a daemon's non-SIGTERM
+  graceful-shutdown signal (postgres, nginx), `closureAllow` a closure-guard
+  exemption, and `strip = false` opts a variant out of stripping ELF symbol
+  tables (.symtab/.strtab) from its layers at image-assembly time
+  (`stripImage` + `lib/strip-image.py`; store paths and their names are
+  untouched, only file contents inside the layers shrink). `latest`
   must name a variant (the bare version for an `mkVariants` module); the flake
   rejects anything else at eval time. A compiled-binary base is
   `variants."latest" = vardeLib.staticSpec;` (or `glibcSpec`/`muslSpec`).
