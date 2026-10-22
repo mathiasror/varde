@@ -1,0 +1,178 @@
+name: rebuild-watchdog
+
+# Keeps the weekly CVE-refresh rebuild honest without anyone watching the
+# Actions tab. Between Aug 31 and Oct 12 2026 five of seven weekly publishes
+# failed and nobody noticed for six weeks: a red run emails at most one
+# person, and a run started by another workflow emails nobody.
+#
+# Every few hours this:
+#   1. Retries. The newest bump-flake-lock run on main and the newest
+#      publishing build-image run on main get their failed jobs re-run, up to
+#      MAX_ATTEMPTS in total. Most red weeks are cache-cold musl legs hitting
+#      the 350-minute cap or a flaky dependency test, and every finished path
+#      is already in Cachix, so a re-run resumes rather than restarts (see
+#      bump-lock.yml's header). Cancelled runs are left alone: someone meant it.
+#   2. Checks freshness from the consumer's side. For every documented
+#      image:tag (.#latestTags) it reads the newest signed vuln attestation on
+#      the linux/amd64 image and fails if that scan is older than STALE_DAYS.
+#      Every publish re-attests even an unchanged digest, so this catches
+#      what step 1 cannot: the schedule disabled (GitHub turns cron off after
+#      60 days without repo activity), Actions off, or a publish that went
+#      green without moving tags.
+#   3. Reports. Anything still wrong after retries opens (or updates) one
+#      issue labelled $LABEL; when everything is fine again it is closed.
+#      A bump run that stays red after all retries is a real breakage in the
+#      new nixpkgs and needs a person: fix it on a branch, as with the sqlite
+#      override of Sep–Oct 2026.
+#
+# Re-runs started here with GITHUB_TOKEN are allowed (they need
+# actions: write).
+
+on:
+  schedule:
+    - cron: "17 */3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rebuild-watchdog
+  cancel-in-progress: false
+
+env:
+  MAX_ATTEMPTS: 3 # the scheduled run + two automatic re-runs
+  STALE_DAYS: 10 # a weekly publish plus three days of slack
+  LABEL: rebuild-failed
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: write # gh run rerun
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
+        with:
+          determinate: false # plain upstream Nix; no FlakeHub login attempt (see build.yml)
+
+      - name: Retry failed rebuild runs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          : > "$RUNNER_TEMP/problems.md"
+          # $1 workflow file, $2 jq filter picking the run that matters.
+          check() {
+            local wf=$1 pick=$2 run id status conclusion attempt url
+            run=$(gh run list -R "$GITHUB_REPOSITORY" -w "$wf" -b main -L 20 \
+                    --json databaseId,status,conclusion,attempt,url,event \
+                  | jq -c "[.[] | select($pick)] | first // empty")
+            [ -n "$run" ] || { echo "$wf: no run on main yet"; return 0; }
+            id=$(jq -r .databaseId <<<"$run")
+            status=$(jq -r .status <<<"$run")
+            conclusion=$(jq -r .conclusion <<<"$run")
+            attempt=$(jq -r .attempt <<<"$run")
+            url=$(jq -r .url <<<"$run")
+            if [ "$status" != completed ]; then
+              echo "$wf: run $id attempt $attempt is $status"
+              return 0
+            fi
+            case "$conclusion" in
+              failure|timed_out|startup_failure) ;;
+              *) echo "$wf: run $id attempt $attempt: $conclusion"; return 0 ;;
+            esac
+            if [ "$attempt" -lt "$MAX_ATTEMPTS" ]; then
+              echo "$wf: run $id attempt $attempt $conclusion — re-running failed jobs"
+              gh run rerun "$id" -R "$GITHUB_REPOSITORY" --failed
+              return 0
+            fi
+            echo "::warning::$wf: run $id still $conclusion after $attempt attempts"
+            echo "- \`$wf\` is still **$conclusion** after $attempt attempts: $url" >> "$RUNNER_TEMP/problems.md"
+            return 0
+          }
+          # Branch dispatches of bump-lock are dry runs and never land, so
+          # only main counts (-b main). For build-image, PR runs are not
+          # publishes; push and dispatch on main are.
+          check bump-lock.yml 'true'
+          check build.yml '.event == "push" or .event == "workflow_dispatch"'
+
+      - name: Check published images are fresh
+        env:
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          owner=$(tr '[:upper:]' '[:lower:]' <<<"$OWNER")
+          id="https://github.com/${GITHUB_REPOSITORY}/.github/workflows/build.yml@refs/heads/main"
+          issuer=https://token.actions.githubusercontent.com
+          cutoff=$(date -u -d "-${STALE_DAYS} days" +%s)
+          # Resolve the tools once instead of per image.
+          crane=$(nix build --no-link --print-out-paths --inputs-from . nixpkgs-tools#crane)/bin/crane
+          cosign=$(nix build --no-link --print-out-paths --inputs-from . nixpkgs-tools#cosign)/bin/cosign
+          # Aliases (go, rust) are mirror digests of these images, so checking
+          # the sources covers them.
+          nix eval --json .#latestTags | jq -r 'to_entries[] | "\(.key) \(.value)"' |
+          while read -r image tag; do
+            ref="ghcr.io/${owner}/varde-${image}:${tag}"
+            if ! d=$("$crane" digest --platform linux/amd64 "$ref" 2>/dev/null); then
+              echo "- \`$ref\`: could not resolve the linux/amd64 digest" >> "$RUNNER_TEMP/problems.md"
+              continue
+            fi
+            # Same recipe as the README: newest verified vuln attestation.
+            scanned=$("$cosign" verify-attestation --type vuln \
+                        --certificate-identity "$id" --certificate-oidc-issuer "$issuer" \
+                        "${ref%:*}@${d}" 2>/dev/null \
+                      | jq -rs '[.[].payload | @base64d | fromjson | .predicate.metadata.scanFinishedOn] | max // empty' || true)
+            if [ -z "$scanned" ]; then
+              echo "- \`$ref\`: no verified vuln attestation found" >> "$RUNNER_TEMP/problems.md"
+              continue
+            fi
+            echo "$ref: last scanned $scanned"
+            if [ "$(date -u -d "$scanned" +%s)" -lt "$cutoff" ]; then
+              echo "- \`$ref\` was last published $scanned, more than $STALE_DAYS days ago" >> "$RUNNER_TEMP/problems.md"
+            fi
+          done
+
+      - name: Open, update or close the tracking issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          title="Weekly image rebuild needs attention"
+          issue=$(gh issue list -R "$GITHUB_REPOSITORY" --label "$LABEL" --state open \
+                    --json number --jq '.[0].number // empty')
+          if [ ! -s "$RUNNER_TEMP/problems.md" ]; then
+            echo "All rebuild runs green and every image fresh."
+            if [ -n "$issue" ]; then
+              gh issue close "$issue" -R "$GITHUB_REPOSITORY" \
+                --comment "Resolved: rebuild runs are green and every image was published within $STALE_DAYS days ($RUN_URL)."
+            fi
+            exit 0
+          fi
+          cat "$RUNNER_TEMP/problems.md"
+          body=$(cat <<EOF
+          The automatic weekly rebuild is not keeping the published images current.
+
+          $(cat "$RUNNER_TEMP/problems.md")
+
+          Failed jobs were already re-run automatically (up to $MAX_ATTEMPTS attempts). Until this is fixed, users keep getting the last good images, without new CVE fixes. A \`bump-lock.yml\` run still red after retries usually means the new nixpkgs broke a build: find the failing derivation in the run and override it on a branch.
+
+          Checked by [rebuild-watchdog]($RUN_URL); this issue closes itself once everything is green again.
+          EOF
+          )
+          if [ -z "$issue" ]; then
+            gh label create "$LABEL" -R "$GITHUB_REPOSITORY" --color B60205 \
+              --description "Weekly image rebuild is failing or images are stale" --force >/dev/null
+            issue=$(gh issue create -R "$GITHUB_REPOSITORY" --title "$title" --label "$LABEL" --body "$body" \
+                      | grep -o '[0-9]*$')
+            echo "opened issue #$issue"
+          else
+            gh issue edit "$issue" -R "$GITHUB_REPOSITORY" --body "$body" >/dev/null
+            echo "updated issue #$issue"
+          fi
