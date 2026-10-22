@@ -10,6 +10,9 @@
 #
 # Every entry must cite evidence. `when` gets the libc package set and must be
 # true for the statement to be emitted; leave it out for unconditional facts.
+# `images` (image names, e.g. [ "php" ]) limits an entry to those images, for
+# a package that is reachable in some images and not others. An `affected`
+# entry needs an `action` (OpenVEX action_statement) telling users what to do.
 # `pkg` is an attribute of that package set, or "libc" for glibc/musl.
 # Statuses/justifications: https://github.com/openvex/spec/blob/main/OPENVEX-SPEC.md
 { lib }:
@@ -95,6 +98,37 @@ in
     status = "not_affected";
     justification = "component_not_present";
     impact = "krb5kdc (src/kdc) is not shipped; images carry only krb5's lib output.";
+  }
+  # krb5_rd_cred NULL dereference (ticket 9211; master 48afa9ab, krb5-1.22
+  # branch 62196e2b, unreleased as of 2026-10-22). Reached only through the
+  # GSS-API acceptor (gss_accept_sec_context), so it depends on the image.
+  {
+    pkg = "krb5";
+    images = [
+      "php"
+      "mysql"
+    ];
+    cves = [ "CVE-2026-107778" ];
+    status = "not_affected";
+    justification = "vulnerable_code_not_in_execute_path";
+    impact = "krb5_rd_cred is reached only from the GSS-API acceptor (gss_accept_sec_context). These images use krb5 only as an initiator (libcurl SPNEGO, libpq, c-client); mysqld runs no ONC-RPC server (libtirpc svc_auth_gss), and the server-side Kerberos auth plugin is MySQL Enterprise only.";
+    when = p: !(lib.versionAtLeast p.krb5.version "1.22.3");
+  }
+  {
+    pkg = "krb5";
+    images = [ "postgres" ];
+    cves = [ "CVE-2026-107778" ];
+    status = "affected";
+    impact = "postgres is built --with-gssapi and calls gss_accept_sec_context for a GSSENCRequest on any TCP connection, before pg_hba is consulted. Unreachable without a keytab (the image ships none); reachable by any client holding a service ticket once one is configured.";
+    action = "If you do not use Kerberos, do not provide a keytab (krb_server_keyfile, KRB5_KTNAME or /etc/krb5.keytab): the acceptor then fails before the vulnerable code. If you do, restrict network access to trusted clients until varde ships krb5 1.22.3 or a backport of krb5 62196e2b. gss_accept_delegation = off does not mitigate this.";
+    when = p: !(lib.versionAtLeast p.krb5.version "1.22.3");
+  }
+  {
+    pkg = "krb5";
+    cves = [ "CVE-2026-107778" ];
+    status = "fixed";
+    impact = "Fixed in krb5 1.22.3 (62196e2b, ticket 9211); NVD carries no fix bound, so 1.22.3 still matches.";
+    when = p: lib.versionAtLeast p.krb5.version "1.22.3";
   }
 
   # --- libtiff -------------------------------------------------------------
@@ -192,5 +226,24 @@ in
     status = "not_affected";
     justification = "vulnerable_code_not_present";
     impact = "mimetypes reads writable registry/default paths on Windows only; varde ships Linux builds.";
+  }
+  {
+    pkg = "python3";
+    purls =
+      p:
+      lib.concatMap
+        (a: [
+          "pkg:nix/python3@${p.${a}.version}"
+          "pkg:generic/cpython@${p.${a}.version}"
+        ])
+        [
+          "python311"
+          "python312"
+          "python313"
+        ];
+    cves = [ "CVE-2026-3479" ];
+    status = "not_affected";
+    justification = "vulnerable_code_cannot_be_controlled_by_adversary";
+    impact = "Disputed (NVD). pkgutil.get_data() has the same security model as open(): upstream reverted the resource-name check (gh-146121, PR #148197) and documented that instead; the 3.11/3.12 backports (#146136, #146135) were closed unmerged. No code fix exists or is planned.";
   }
 ]
