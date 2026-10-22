@@ -258,7 +258,7 @@
             lib.nameValuePair e.sbomName (
               vardeVex.vexFor {
                 pkgs = pkgsBySystem.${system};
-                inherit (e) libc;
+                inherit (e) image libc;
                 timestamp = vexTimestamp;
                 id = "https://github.com/mathiasror/varde/vex/${e.image}-${e.tag}-${system}@${self.rev or "dirty"}";
               }

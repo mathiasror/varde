@@ -17,7 +17,7 @@
 # sbomComponent). grype matches a VEX product against the match's own package
 # purl, and qualifiers missing from the VEX side (outputhash=) are ignored.
 #
-# vexFor :: { pkgs, libc, timestamp, id } -> OpenVEX attrset (toJSON-able)
+# vexFor :: { pkgs, image, libc, timestamp, id } -> OpenVEX attrset (toJSON-able)
 { lib }:
 let
   # Packages whose patches are mined for CVE ids. A package that an image does
@@ -60,6 +60,7 @@ let
       status,
       justification ? null,
       impact ? null,
+      action ? null,
     }:
     {
       vulnerability.name = cve;
@@ -70,12 +71,15 @@ let
     # OpenVEX: impact_statement belongs to not_affected; other statuses get status_notes.
     // lib.optionalAttrs (impact != null) (
       if status == "not_affected" then { impact_statement = impact; } else { status_notes = impact; }
-    );
+    )
+    # OpenVEX requires an action_statement on every `affected` statement.
+    // lib.optionalAttrs (action != null) { action_statement = action; };
 in
 {
   vexFor =
     {
       pkgs,
+      image,
       libc,
       timestamp,
       id,
@@ -130,6 +134,9 @@ in
         lib.optionals
           (
             (s.libc or libc) == libc
+            # `images` scopes a statement to some images: the same package
+            # purl can be reachable in one image and dead code in another.
+            && (s ? images -> lib.elem image s.images)
             && (s.pkg == "libc" -> libcDrv != null)
             && (s.pkg == "libc" || p ? ${s.pkg})
             && (s.when or (_: true)) p
@@ -145,6 +152,7 @@ in
                 products = purlsOf s.pkg ++ (s.purls or (_: [ ])) p;
                 justification = s.justification or null;
                 impact = s.impact or null;
+                action = s.action or null;
               }
             ) s.cves
           )
