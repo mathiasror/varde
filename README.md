@@ -416,6 +416,18 @@ dispatches the build from that commit — so published images pick up CVE fixes
 *and* every published image corresponds to a commit of this repo whose lock
 reproduces it.
 
+If a weekly rebuild fails, [`rebuild-watchdog.yml`](.github/workflows/rebuild-watchdog.yml)
+(every 3 hours) re-runs the failed jobs up to twice, since most red weeks are
+cache-cold timeouts or flaky dependency tests. It also checks that every
+published image carries a vuln attestation from the last 10 days. If either is
+still wrong, it opens an issue labelled `rebuild-failed`, and it closes that
+issue once things are green again. A bump that stays red triggers
+[`rebuild-fix.yml`](.github/workflows/rebuild-fix.yml): Claude Code diagnoses
+the failed run and proposes a fix PR, which
+[`verify.yml`](.github/workflows/verify.yml) checks without publishing, so a
+person still reviews and merges it. This needs an `ANTHROPIC_API_KEY` repo
+secret, and Actions must be allowed to create pull requests.
+
 > **Cache setup, one-time:** create a free open-source cache named `varde` at
 > [cachix.org](https://cachix.org) (keep it **public** so fork PRs and end users
 > can read it), then add its write token as the repo secret `CACHIX_AUTH_TOKEN`
@@ -511,6 +523,9 @@ examples/<image>/<variant>/     # buildable "drop your app in" examples
 scripts/e2e.sh                  # build examples on local bases, smoke + size budgets
 .github/workflows/build.yml     # data-driven matrix build -> grype -> GHCR
 .github/workflows/bump-lock.yml # weekly flake.lock bump -> commit to main -> dispatch build
+.github/workflows/rebuild-watchdog.yml # retry failed rebuilds, flag stale images, track an issue
+.github/workflows/rebuild-fix.yml # agent-proposed fix PR for a bump that stays red
+.github/workflows/verify.yml    # full build + e2e of a branch, no publish (bot-pushed PRs)
 .github/workflows/e2e.yml       # build + smoke-test the examples
 .github/workflows/pages.yml     # deploy the landing page to GitHub Pages
 .github/canary/                 # known-CVE SBOM fixture that guards the grype scan

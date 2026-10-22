@@ -1,0 +1,303 @@
+name: rebuild-fix
+
+# When a weekly bump stays red after rebuild-watchdog.yml's retries, the new
+# nixpkgs genuinely broke something (Sep 14 – Oct 12 2026: sqlite's test
+# suite under musl). This asks Claude Code to diagnose the failed run and
+# make the fix a person would otherwise write by hand, then proposes it as a
+# PR. Nothing lands without review: the PR is verified by verify.yml (full
+# matrix + e2e, no publish), and merging it is the publish.
+#
+# Two jobs, split by privilege. `diagnose` runs the agent with a read-only
+# GITHUB_TOKEN and the API key, and can only hand back a patch. `propose`
+# holds the write permissions but never sees the API key or runs agent
+# output: it applies the patch, refuses anything under .github/, and commits
+# through createCommitOnBranch, so the commit is GitHub-signed like the bump
+# commits.
+#
+# Needs the ANTHROPIC_API_KEY repo secret; without it the run only comments
+# on the tracking issue. Opening the PR also needs "Allow GitHub Actions to
+# create and approve pull requests" (Settings → Actions → General); without
+# it the branch is still pushed and verified, and the issue gets a link to
+# open the PR by hand.
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: The failed bump-flake-lock run to diagnose
+        required: true
+      issue:
+        description: Tracking issue to report to (optional)
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rebuild-fix
+  cancel-in-progress: false
+
+env:
+  BUMP_BRANCH: bump/flake-lock
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    # The agent may build the failing derivation; the heavy musl legs are far
+    # beyond this, so the prompt steers it to the one broken derivation.
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      actions: read # the failed run's logs
+    outputs:
+      has_key: ${{ steps.key.outputs.has_key }}
+      base: ${{ steps.base.outputs.base }}
+      changed: ${{ steps.patch.outputs.changed }}
+      result: ${{ steps.claude.outputs.structured_output }}
+    steps:
+      - id: key
+        env:
+          HAS_KEY: ${{ secrets.ANTHROPIC_API_KEY != '' }}
+          RUN_ID: ${{ inputs.run_id }}
+          ISSUE: ${{ inputs.issue }}
+        run: |
+          set -euo pipefail
+          [[ "$RUN_ID" =~ ^[0-9]+$ ]] || { echo "::error::run_id must be numeric"; exit 1; }
+          [[ -z "$ISSUE" || "$ISSUE" =~ ^[0-9]+$ ]] || { echo "::error::issue must be numeric"; exit 1; }
+          echo "has_key=$HAS_KEY" >> "$GITHUB_OUTPUT"
+          [ "$HAS_KEY" = true ] || echo "::warning::ANTHROPIC_API_KEY is not set; skipping the diagnosis"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: steps.key.outputs.has_key == 'true'
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
+        if: steps.key.outputs.has_key == 'true'
+        with:
+          determinate: false # plain upstream Nix; no FlakeHub login attempt (see build.yml)
+      # Read-only: pull what the verify run already built. No authToken, so
+      # nothing the agent builds is pushed to the shared cache.
+      - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
+        if: steps.key.outputs.has_key == 'true'
+        with:
+          name: varde
+
+      - id: base
+        if: steps.key.outputs.has_key == 'true'
+        name: Reproduce the failing tree
+        run: |
+          set -euo pipefail
+          # The red bump left its lock on the bump branch (only a landed bump
+          # deletes it). If it is gone (the bump job itself failed, before
+          # committing), recreate the same bump on main.
+          if git fetch -q origin "refs/heads/$BUMP_BRANCH" 2>/dev/null; then
+            git checkout -q FETCH_HEAD
+            echo "base=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+            echo "diagnosing the bump branch at $(git rev-parse --short HEAD)"
+          else
+            echo "base=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+            nix flake update nixpkgs
+            # A local, never-pushed commit, only so the agent's own changes
+            # are what `git diff HEAD` shows; propose commits the lock too.
+            git -c user.name=ci -c user.email=ci@localhost commit -qam "bump nixpkgs (local)"
+            echo "bump branch gone; re-bumped main to $(jq -r '.nodes.nixpkgs.locked.rev[0:12]' flake.lock)"
+          fi
+
+      - name: Collect the failed run's logs
+        if: steps.key.outputs.has_key == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_ID: ${{ inputs.run_id }}
+        run: |
+          set -euo pipefail
+          mkdir -p .rebuild-fix
+          echo ".rebuild-fix/" >> .git/info/exclude
+          gh run view "$RUN_ID" -R "$GITHUB_REPOSITORY" --json jobs \
+            --jq '.jobs[] | select(.conclusion == "failure" or .conclusion == "timed_out") | "\(.conclusion)\t\(.name)"' \
+            > .rebuild-fix/failed-jobs.tsv
+          # A called workflow's job logs come through the caller run.
+          gh run view "$RUN_ID" -R "$GITHUB_REPOSITORY" --log-failed > .rebuild-fix/failed.log || true
+          wc -l .rebuild-fix/failed-jobs.tsv .rebuild-fix/failed.log
+
+      - id: claude
+        if: steps.key.outputs.has_key == 'true'
+        uses: anthropics/claude-code-action@6b6870e649b5ff408753befeaee5fc7989d4e6a9 # v1.0.258
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          github_token: ${{ secrets.GITHUB_TOKEN }} # read-only here
+          prompt: |
+            The weekly nixpkgs bump of this repository (varde: Nix-built
+            container base images) failed CI, and automatic re-runs did not
+            help, so it is most likely a real breakage from the new nixpkgs.
+            The working tree is the failing commit: the bumped flake.lock on
+            top of main.
+
+            Failed run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ inputs.run_id }}
+            Failed jobs (conclusion, name): .rebuild-fix/failed-jobs.tsv
+            Their logs: .rebuild-fix/failed.log (large; grep it, don't read it whole)
+
+            Your job:
+            1. Find the root cause: which derivation fails, for which image
+               and variant, and why. Read the repo's own notes first: the
+               headers of .github/workflows/build.yml and bump-lock.yml,
+               docs/design.md, and the comments in flake.nix and lib/ that
+               describe earlier breakages and how they were fixed.
+            2. If the failure is infrastructure, not code (a job that hit
+               its timeout while still compiling, a runner or network error,
+               a test that is flaky rather than broken), change nothing and
+               say so.
+            3. Otherwise make the smallest correct fix, in the style the repo
+               already uses for these (overlays/overrides in flake.nix or
+               lib/, with a comment that says what broke, when, and when the
+               override can go). Prefer a targeted override such as
+               disabling one broken test, or pinning or patching one
+               package, over pinning nixpkgs back.
+            4. Confirm the fix with the cheapest real check: `nix eval`, then
+               `nix build` of just the derivation that failed (deps come from
+               the varde Cachix cache). Do not build whole images or the
+               heavy musl jre/php variants; they take hours.
+
+            Rules: do not touch .github/ or flake.lock; do not commit or
+            push (the workflow does that after review); do not weaken or
+            disable security scanning, signing, or the grype canary.
+
+            Return a `cause` (one paragraph), `fixed` (true only if you
+            changed files and the check you ran passed), a `title` for the
+            commit/PR in conventional-commit form (e.g. "fix(musl): skip
+            sqlite's flaky test under musl"), and a `summary` in Markdown
+            for the PR description: the root cause, the change, how you
+            verified it, and when the override can be removed.
+          claude_args: |
+            --model claude-opus-5-5
+            --max-turns 80
+            --allowedTools "Read,Edit,Write,Glob,Grep,Bash(nix eval:*),Bash(nix build:*),Bash(nix log:*),Bash(nix path-info:*),Bash(nix derivation show:*),Bash(nix flake show:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(gh run view:*)"
+            --json-schema '{"type":"object","properties":{"cause":{"type":"string"},"fixed":{"type":"boolean"},"title":{"type":"string"},"summary":{"type":"string"}},"required":["cause","fixed","title","summary"]}'
+
+      - id: patch
+        if: steps.key.outputs.has_key == 'true'
+        name: Export the agent's changes
+        env:
+          RESULT: ${{ steps.claude.outputs.structured_output }}
+          BASE: ${{ steps.base.outputs.base }}
+        run: |
+          set -euo pipefail
+          git add -A
+          if git diff --cached --quiet HEAD || [ "$(jq -r '.fixed // false' <<<"$RESULT")" != true ]; then
+            echo "no fix proposed"
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git diff --cached --stat HEAD
+          # Against the pushed base, so a locally re-bumped flake.lock rides
+          # along; the agent's own edits are everything after HEAD.
+          git diff --cached --binary "$BASE" > "$RUNNER_TEMP/fix.patch"
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+      - if: steps.patch.outputs.changed == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fix-patch
+          path: ${{ runner.temp }}/fix.patch
+          retention-days: 7
+
+  propose:
+    needs: diagnose
+    if: needs.diagnose.outputs.has_key == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write # fix branch + createCommitOnBranch
+      pull-requests: write
+      actions: write # gh workflow run verify.yml
+      issues: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      RUN_ID: ${{ inputs.run_id }}
+      ISSUE: ${{ inputs.issue }}
+      BASE: ${{ needs.diagnose.outputs.base }}
+      RESULT: ${{ needs.diagnose.outputs.result }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: needs.diagnose.outputs.changed == 'true'
+        with:
+          ref: ${{ needs.diagnose.outputs.base }}
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: needs.diagnose.outputs.changed == 'true'
+        with:
+          name: fix-patch
+          path: ${{ runner.temp }}
+
+      - id: push
+        if: needs.diagnose.outputs.changed == 'true'
+        name: Commit the fix to its own branch (GitHub-signed)
+        run: |
+          set -euo pipefail
+          git apply --index "$RUNNER_TEMP/fix.patch"
+          # GITHUB_TOKEN cannot write workflows anyway; fail clearly instead.
+          if git diff --cached --name-only HEAD | grep -q '^\.github/'; then
+            echo "::error::the proposed fix touches .github/; refusing"
+            git diff --cached --name-only HEAD
+            exit 1
+          fi
+          branch="fix/rebuild-$RUN_ID"
+          title=$(jq -r '.title' <<<"$RESULT" | head -n1 | cut -c1-120)
+          gh api -X POST "repos/$GITHUB_REPOSITORY/git/refs" \
+            -f ref="refs/heads/$branch" -f sha="$BASE" >/dev/null
+          # One createCommitOnBranch with every added/modified file (base64)
+          # and every deletion; same GitHub-signed path as bump-lock.yml.
+          {
+            git diff --cached --name-only --diff-filter=d HEAD | while read -r f; do
+              jq -n --arg path "$f" --arg contents "$(base64 -w0 "$f")" '{path: $path, contents: $contents}'
+            done | jq -s . > "$RUNNER_TEMP/additions.json"
+            git diff --cached --name-only --diff-filter=D HEAD | jq -R '{path: .}' | jq -s . > "$RUNNER_TEMP/deletions.json"
+          }
+          # shellcheck disable=SC2016 # $input is a GraphQL variable
+          jq -n \
+            --arg repo "$GITHUB_REPOSITORY" --arg branch "$branch" --arg head "$BASE" \
+            --arg headline "$title" --arg body "Proposed by rebuild-fix ($RUN_URL) for failed bump run $RUN_ID." \
+            --slurpfile add "$RUNNER_TEMP/additions.json" --slurpfile del "$RUNNER_TEMP/deletions.json" '{
+              query: "mutation ($input: CreateCommitOnBranchInput!) { createCommitOnBranch(input: $input) { commit { oid } } }",
+              variables: {input: {
+                branch: {repositoryNameWithOwner: $repo, branchName: $branch},
+                expectedHeadOid: $head,
+                message: {headline: $headline, body: $body},
+                fileChanges: {additions: $add[0], deletions: $del[0]}
+              }}
+            }' | gh api graphql --input - --jq '.data.createCommitOnBranch.commit.oid'
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+          echo "title=$title" >> "$GITHUB_OUTPUT"
+
+      - name: Verify, open the PR and report
+        env:
+          CHANGED: ${{ needs.diagnose.outputs.changed }}
+          BRANCH: ${{ steps.push.outputs.branch }}
+          TITLE: ${{ steps.push.outputs.title }} # agent-written: env only, never inline
+        run: |
+          set -euo pipefail
+          cause=$(jq -r '.cause // "The agent returned no diagnosis."' <<<"$RESULT")
+          if [ "$CHANGED" != true ]; then
+            note=$(printf 'rebuild-fix looked at bump run %s and proposed **no change**:\n\n%s\n\n(%s)' "$RUN_ID" "$cause" "$RUN_URL")
+            [ -n "$ISSUE" ] && gh issue comment "$ISSUE" -R "$GITHUB_REPOSITORY" --body "$note"
+            echo "$note"
+            exit 0
+          fi
+          branch=$BRANCH
+          # The pushed branch raises no pull_request event (GITHUB_TOKEN), so
+          # verify.yml runs the full pre-merge check; its checks show on the PR.
+          gh workflow run verify.yml -R "$GITHUB_REPOSITORY" --ref "$branch"
+          # shellcheck disable=SC2016 # the backticks are Markdown
+          body=$(printf '%s\n\n---\nProposed automatically by [rebuild-fix](%s) for the failed weekly bump (run %s). It contains the bumped `flake.lock` plus the fix. **Review the diff before merging.** The `verify` run checks the full build matrix and the e2e examples without publishing; merging publishes the images.\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)' \
+                   "$(jq -r '.summary' <<<"$RESULT")" "$RUN_URL" "$RUN_ID")
+          if pr=$(gh pr create -R "$GITHUB_REPOSITORY" --base main --head "$branch" \
+                    --title "$TITLE" --body "$body" 2>&1); then
+            note="rebuild-fix proposed a fix: $pr"
+          else
+            echo "::warning::could not open the PR ($pr)"
+            note="rebuild-fix pushed a fix to \`$branch\`, but Actions may not open PRs in this repo. Open it here: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/compare/main...$branch?expand=1"
+          fi
+          note=$(printf '%s\n\nDiagnosis: %s' "$note" "$cause")
+          [ -n "$ISSUE" ] && gh issue comment "$ISSUE" -R "$GITHUB_REPOSITORY" --body "$note"
+          echo "$note"
