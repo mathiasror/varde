@@ -22,12 +22,11 @@ name: rebuild-watchdog
 #   3. Reports. Anything still wrong after retries opens (or updates) one
 #      issue labelled $LABEL; when everything is fine again it is closed.
 #      A bump run that stays red after all retries is a real breakage in the
-#      new nixpkgs, so rebuild-fix.yml is dispatched once for that run to
-#      propose a fix PR.
+#      new nixpkgs and needs a person: fix it on a branch, as with the sqlite
+#      override of Sep–Oct 2026.
 #
-# Runs started here with GITHUB_TOKEN (re-runs, the rebuild-fix dispatch) are
-# allowed: re-runs need actions: write, and workflow_dispatch is the
-# documented exception to the no-recursive-triggers rule.
+# Re-runs started here with GITHUB_TOKEN are allowed (they need
+# actions: write).
 
 on:
   schedule:
@@ -52,7 +51,7 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: read
-      actions: write # gh run rerun, gh workflow run rebuild-fix.yml
+      actions: write # gh run rerun
       issues: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -68,7 +67,6 @@ jobs:
         run: |
           set -euo pipefail
           : > "$RUNNER_TEMP/problems.md"
-          : > "$RUNNER_TEMP/exhausted-bump"
           # $1 workflow file, $2 jq filter picking the run that matters.
           check() {
             local wf=$1 pick=$2 run id status conclusion attempt url
@@ -96,7 +94,6 @@ jobs:
             fi
             echo "::warning::$wf: run $id still $conclusion after $attempt attempts"
             echo "- \`$wf\` is still **$conclusion** after $attempt attempts: $url" >> "$RUNNER_TEMP/problems.md"
-            [ "$wf" = bump-lock.yml ] && echo "$id" > "$RUNNER_TEMP/exhausted-bump"
             return 0
           }
           # Branch dispatches of bump-lock are dry runs and never land, so
@@ -159,26 +156,14 @@ jobs:
             exit 0
           fi
           cat "$RUNNER_TEMP/problems.md"
-          # Markers recording which bump runs already got a fix attempt live
-          # in the issue body, so carry them over when it is rewritten.
-          markers=""
-          [ -n "$issue" ] && markers=$(gh issue view "$issue" -R "$GITHUB_REPOSITORY" --json body --jq .body \
-                                         | grep -o '<!-- fix-dispatched:[0-9]* -->' || true)
-          bump=$(cat "$RUNNER_TEMP/exhausted-bump")
-          dispatch=""
-          if [ -n "$bump" ] && ! grep -q "fix-dispatched:$bump " <<<"$markers"; then
-            dispatch=$bump
-            markers=$(printf '%s\n<!-- fix-dispatched:%s -->' "$markers" "$bump")
-          fi
           body=$(cat <<EOF
           The automatic weekly rebuild is not keeping the published images current.
 
           $(cat "$RUNNER_TEMP/problems.md")
 
-          Failed jobs were already re-run automatically (up to $MAX_ATTEMPTS attempts). Until this is fixed, users keep getting the last good images, without new CVE fixes. A red \`bump-lock.yml\` run triggers \`rebuild-fix.yml\`, which proposes a fix PR when it can.
+          Failed jobs were already re-run automatically (up to $MAX_ATTEMPTS attempts). Until this is fixed, users keep getting the last good images, without new CVE fixes. A \`bump-lock.yml\` run still red after retries usually means the new nixpkgs broke a build: find the failing derivation in the run and override it on a branch.
 
           Checked by [rebuild-watchdog]($RUN_URL); this issue closes itself once everything is green again.
-          $markers
           EOF
           )
           if [ -z "$issue" ]; then
@@ -190,9 +175,4 @@ jobs:
           else
             gh issue edit "$issue" -R "$GITHUB_REPOSITORY" --body "$body" >/dev/null
             echo "updated issue #$issue"
-          fi
-          if [ -n "$dispatch" ]; then
-            gh workflow run rebuild-fix.yml -R "$GITHUB_REPOSITORY" --ref main \
-              -f run_id="$dispatch" -f issue="$issue"
-            echo "dispatched rebuild-fix.yml for bump run $dispatch"
           fi
