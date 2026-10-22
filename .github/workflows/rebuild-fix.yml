@@ -4,20 +4,24 @@ name: rebuild-fix
 # nixpkgs genuinely broke something (Sep 14 – Oct 12 2026: sqlite's test
 # suite under musl). This asks Claude Code to diagnose the failed run and
 # make the fix a person would otherwise write by hand, then proposes it as a
-# PR. Nothing lands without review: the PR is verified by verify.yml (full
-# matrix + e2e, no publish), and merging it is the publish.
+# PR. Nothing runs or lands without review: after reading the diff, the
+# reviewer dispatches verify.yml on the branch (full matrix + e2e, no
+# publish), and merging is the publish. verify is deliberately NOT started
+# from here: it runs the branch's code with the Cachix push token and GHCR
+# write, and agent-written code must not reach those unread.
 #
 # Two jobs, split by privilege. `diagnose` runs the agent with a read-only
 # GITHUB_TOKEN and the API key, and can only hand back a patch. `propose`
 # holds the write permissions but never sees the API key or runs agent
-# output: it applies the patch, refuses anything under .github/, and commits
+# output: it applies the patch, refuses anything under .github/ and any
+# symlink or submodule, takes contents from the index (never the disk), commits
 # through createCommitOnBranch, so the commit is GitHub-signed like the bump
 # commits.
 #
 # Needs the ANTHROPIC_API_KEY repo secret; without it the run only comments
 # on the tracking issue. Opening the PR also needs "Allow GitHub Actions to
 # create and approve pull requests" (Settings → Actions → General); without
-# it the branch is still pushed and verified, and the issue gets a link to
+# it the branch is still pushed, and the issue gets a link to
 # open the PR by hand.
 
 on:
@@ -172,6 +176,7 @@ jobs:
           claude_args: |
             --model claude-opus-5-5
             --max-turns 80
+            --disallowedTools "Bash(nix * --impure*),Bash(nix * --expr*),Bash(nix * --option*),Bash(nix * --override-input*),Bash(nix * --store*)"
             --allowedTools "Read,Edit,Write,Glob,Grep,Bash(nix eval:*),Bash(nix build:*),Bash(nix log:*),Bash(nix path-info:*),Bash(nix derivation show:*),Bash(nix flake show:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(gh run view:*)"
             --json-schema '{"type":"object","properties":{"cause":{"type":"string"},"fixed":{"type":"boolean"},"title":{"type":"string"},"summary":{"type":"string"}},"required":["cause","fixed","title","summary"]}'
 
@@ -209,7 +214,6 @@ jobs:
     permissions:
       contents: write # fix branch + createCommitOnBranch
       pull-requests: write
-      actions: write # gh workflow run verify.yml
       issues: write
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -236,6 +240,13 @@ jobs:
         run: |
           set -euo pipefail
           git apply --index "$RUNNER_TEMP/fix.patch"
+          # Regular files only. A symlink's target would otherwise be read off
+          # this runner's disk into the commit; submodules have no contents.
+          if git diff --cached --raw HEAD | awk '{print $2}' | grep -qvE '^100(644|755)$|^000000$'; then
+            echo "::error::the proposed fix adds a symlink or submodule; refusing"
+            git diff --cached --raw HEAD
+            exit 1
+          fi
           # GITHUB_TOKEN cannot write workflows anyway; fail clearly instead.
           if git diff --cached --name-only HEAD | grep -q '^\.github/'; then
             echo "::error::the proposed fix touches .github/; refusing"
@@ -249,10 +260,11 @@ jobs:
           # One createCommitOnBranch with every added/modified file (base64)
           # and every deletion; same GitHub-signed path as bump-lock.yml.
           {
-            git diff --cached --name-only --diff-filter=d HEAD | while read -r f; do
-              jq -n --arg path "$f" --arg contents "$(base64 -w0 "$f")" '{path: $path, contents: $contents}'
+            # NUL-delimited names; contents from the index blob, not the path.
+            git diff --cached --name-only -z --diff-filter=d HEAD | while IFS= read -r -d '' f; do
+              jq -n --arg path "$f" --arg contents "$(git show ":$f" | base64 -w0)" '{path: $path, contents: $contents}'
             done | jq -s . > "$RUNNER_TEMP/additions.json"
-            git diff --cached --name-only --diff-filter=D HEAD | jq -R '{path: .}' | jq -s . > "$RUNNER_TEMP/deletions.json"
+            git diff --cached --name-only -z --diff-filter=D HEAD | jq -Rs 'split("\u0000") | map(select(. != "") | {path: .})' > "$RUNNER_TEMP/deletions.json"
           }
           # shellcheck disable=SC2016 # $input is a GraphQL variable
           jq -n \
@@ -285,12 +297,9 @@ jobs:
             exit 0
           fi
           branch=$BRANCH
-          # The pushed branch raises no pull_request event (GITHUB_TOKEN), so
-          # verify.yml runs the full pre-merge check; its checks show on the PR.
-          gh workflow run verify.yml -R "$GITHUB_REPOSITORY" --ref "$branch"
           # shellcheck disable=SC2016 # the backticks are Markdown
-          body=$(printf '%s\n\n---\nProposed automatically by [rebuild-fix](%s) for the failed weekly bump (run %s). It contains the bumped `flake.lock` plus the fix. **Review the diff before merging.** The `verify` run checks the full build matrix and the e2e examples without publishing; merging publishes the images.\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)' \
-                   "$(jq -r '.summary' <<<"$RESULT")" "$RUN_URL" "$RUN_ID")
+          body=$(printf '%s\n\n---\nProposed automatically by [rebuild-fix](%s) for the failed weekly bump (run %s). It contains the bumped `flake.lock` plus the fix.\n\n**Read the diff first**, then run the pre-merge check (full build matrix + e2e, no publish; its checks show on this PR):\n\n```\ngh workflow run verify.yml --ref %s\n```\n\nMerging publishes the images.\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)' \
+                   "$(jq -r '.summary' <<<"$RESULT")" "$RUN_URL" "$RUN_ID" "$branch")
           if pr=$(gh pr create -R "$GITHUB_REPOSITORY" --base main --head "$branch" \
                     --title "$TITLE" --body "$body" 2>&1); then
             note="rebuild-fix proposed a fix: $pr"

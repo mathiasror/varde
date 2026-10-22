@@ -423,9 +423,10 @@ published image carries a vuln attestation from the last 10 days. If either is
 still wrong, it opens an issue labelled `rebuild-failed`, and it closes that
 issue once things are green again. A bump that stays red triggers
 [`rebuild-fix.yml`](.github/workflows/rebuild-fix.yml): Claude Code diagnoses
-the failed run and proposes a fix PR, which
-[`verify.yml`](.github/workflows/verify.yml) checks without publishing, so a
-person still reviews and merges it. This needs an `ANTHROPIC_API_KEY` repo
+the failed run and proposes a fix PR. After reading the diff, you run
+[`verify.yml`](.github/workflows/verify.yml) on it (full build + e2e, no
+publish) and merge. Nothing agent-written runs with the publish credentials
+before a person has read it. This needs an `ANTHROPIC_API_KEY` repo
 secret, and Actions must be allowed to create pull requests.
 
 > **Cache setup, one-time:** create a free open-source cache named `varde` at
@@ -525,7 +526,7 @@ scripts/e2e.sh                  # build examples on local bases, smoke + size bu
 .github/workflows/bump-lock.yml # weekly flake.lock bump -> commit to main -> dispatch build
 .github/workflows/rebuild-watchdog.yml # retry failed rebuilds, flag stale images, track an issue
 .github/workflows/rebuild-fix.yml # agent-proposed fix PR for a bump that stays red
-.github/workflows/verify.yml    # full build + e2e of a branch, no publish (bot-pushed PRs)
+.github/workflows/verify.yml    # full build + e2e of a branch, no publish (dispatch after review)
 .github/workflows/e2e.yml       # build + smoke-test the examples
 .github/workflows/pages.yml     # deploy the landing page to GitHub Pages
 .github/canary/                 # known-CVE SBOM fixture that guards the grype scan

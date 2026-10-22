@@ -6,10 +6,14 @@ name: verify
 #
 # Exists for branches pushed by a bot. A PR opened or pushed with
 # GITHUB_TOKEN raises no pull_request event, so build.yml / e2e.yml never run
-# on it; workflow_dispatch is the documented exception. rebuild-fix.yml
-# dispatches this on its fix branch, and the run's checks attach to the
-# branch head commit, so they show on the PR. Dispatch it by hand on any
-# branch for the same check.
+# on it; workflow_dispatch is the documented exception. The run's checks
+# attach to the branch head commit, so they show on the PR.
+#
+# Dispatch it only AFTER reading the branch's diff. It runs that code with
+# the Cachix push token (secrets: inherit) and, through build.yml, jobs that
+# hold packages/id-token/attestations write — verify_only never uses them,
+# but code under test could. That is why rebuild-fix.yml never dispatches it
+# for its agent-written fix: a person does, from the PR.
 
 on:
   workflow_dispatch:
