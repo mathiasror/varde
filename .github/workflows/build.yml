@@ -840,7 +840,8 @@ jobs:
           # re-point the default tags at glibc.
           planfile="$RUNNER_TEMP/manifest-plan"
           skipfile="$RUNNER_TEMP/manifest-skipped"
-          : > "$planfile"; : > "$skipfile"
+          legacyfile="$RUNNER_TEMP/legacy-arch-tags"
+          : > "$planfile"; : > "$skipfile"; : > "$legacyfile"
           plan(){
             local src amd arm
             src=$(imgref "$2"); amd=$(dgst "$2" "$3" amd64); arm=$(dgst "$2" "$3" arm64)
@@ -876,6 +877,18 @@ jobs:
               | while read -r ver; do
                   if hastag "$image" "${ver}-musl"; then d=musl; else d=glibc; fi
                   plan "${i}:${ver}" "$image" "${ver}-${d}"
+                  # Pre-libc-split per-arch tags (jre:21-amd64, python:3.12-arm64)
+                  # are still pulled, so keep them on the bare tag's children
+                  # instead of leaving them frozen. Both legs or neither, like
+                  # the list itself; the children were signed and verified in
+                  # the build job, so these are plain manifest moves, unsigned
+                  # here. Only tags that already exist are moved (move_legacy):
+                  # this repairs old tags, it does not mint new ones.
+                  amd=$(dgst "$image" "${ver}-${d}" amd64); arm=$(dgst "$image" "${ver}-${d}" arm64)
+                  if [ -n "$amd" ] && [ -n "$arm" ]; then
+                    printf '%s@%s %s:%s-amd64\n' "$i" "$amd" "$i" "$ver" >> "$legacyfile"
+                    printf '%s@%s %s:%s-arm64\n' "$i" "$arm" "$i" "$ver" >> "$legacyfile"
+                  fi
                 done
             lv=$(printf '%s' "$LATEST" | jq -r --arg im "$image" '.[$im] // empty')
             [ -n "$lv" ] || continue
@@ -1077,6 +1090,14 @@ jobs:
           }
           export -f move_one
           xargs -P 8 -n 2 bash -c 'set -euo pipefail; move_one "$@"' _ < "$MOVELIST"
+          # Legacy per-arch tags last, after their bare list has moved.
+          move_legacy(){
+            if skopeo inspect --raw --creds "${ACTOR}:${TOKEN}" "docker://$2" >/dev/null 2>&1; then
+              move_one "$1" "$2"
+            fi
+          }
+          export -f move_legacy
+          xargs -r -P 8 -n 2 bash -c 'set -euo pipefail; move_legacy "$@"' _ < "$legacyfile"
 
           # Every complete pair is now refreshed, signed and tagged; if any pair
           # was held back, say which and go red — the run must not look green
