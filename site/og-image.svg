@@ -1,6 +1,7 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 630" width="1200" height="630" role="img" aria-label="varde — The smallest attack surface you can ship">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 630" width="1200" height="630" role="img" aria-label="varde: the smallest attack surface you can ship. Distroless, non-root, signed container base images built with Nix.">
   <defs>
-    <linearGradient id="og-stone" gradientUnits="userSpaceOnUse" x1="0" y1="430" x2="0" y2="150">
+    <!-- in the mark's own 32-unit space: the fill is resolved after the group's transform -->
+    <linearGradient id="og-stone" gradientUnits="userSpaceOnUse" x1="16" y1="30" x2="16" y2="3">
       <stop offset="0" stop-color="#3DE7C7"/>
       <stop offset="0.45" stop-color="#4D87FF"/>
       <stop offset="0.78" stop-color="#9A7CFF"/>
@@ -41,11 +42,11 @@
   </g>
 
   <g font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif">
-    <text x="90" y="150" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="24" letter-spacing="6" fill="#7C879B">DISTROLESS · NIX-BUILT · NON-ROOT</text>
+    <text x="90" y="150" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="24" letter-spacing="6" fill="#7C879B">DISTROLESS · NON-ROOT · SIGNED · NIX-BUILT</text>
     <text x="86" y="250" font-size="78" font-weight="700" letter-spacing="-3" fill="url(#og-text)">The smallest attack</text>
     <text x="86" y="340" font-size="78" font-weight="700" letter-spacing="-3" fill="url(#og-text)">surface you can ship.</text>
-    <text x="90" y="430" font-size="30" fill="#B7C2D4">Minimal, distroless, non-root base images for Java,</text>
-    <text x="90" y="472" font-size="30" fill="#B7C2D4">Python, Node, Go &amp; Rust — built with Nix.</text>
-    <text x="90" y="566" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="24" fill="#7C879B">ghcr.io/mathiasror</text>
+    <text x="90" y="430" font-size="30" fill="#B7C2D4">Distroless, non-root base images for Java, Python,</text>
+    <text x="90" y="472" font-size="30" fill="#B7C2D4">Node, PHP, Go, Rust, Postgres, Redis, nginx &amp; more.</text>
+    <text x="90" y="566" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="24" fill="#7C879B">ghcr.io/mathiasror · cosign · SBOM · OpenVEX · SLSA</text>
   </g>
 </svg>

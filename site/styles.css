@@ -197,6 +197,11 @@ button { font: inherit; color: inherit; cursor: pointer; }
 }
 .nav__cta:hover { border-color: var(--c-blue); background: var(--glass-2); }
 .ic-gh { width: 16px; height: 16px; }
+/* The secondary links drop first, so the original four keep fitting down to
+   phone width, where every text link hides and only the GitHub CTA stays. */
+@media (max-width: 860px) {
+  .nav__link--extra { display: none; }
+}
 @media (max-width: 540px) {
   .nav__link { display: none; }
 }
@@ -799,6 +804,121 @@ button { font: inherit; color: inherit; cursor: pointer; }
 @media (max-width: 720px) {
   .compare { grid-template-columns: 1fr; }
 }
+
+/* =========================================================================
+   SHARED: prose links + section footnote
+   ========================================================================= */
+.text-link {
+  color: var(--text);
+  text-decoration: underline;
+  text-decoration-color: rgba(122,169,255,0.5);
+  text-underline-offset: .18em;
+  transition: text-decoration-color .16s ease;
+}
+.text-link:hover { text-decoration-color: var(--c-teal); }
+.section__foot {
+  margin-top: 1.4rem;
+  max-width: 46rem;
+  color: var(--muted);
+  font-size: .92rem;
+}
+
+/* =========================================================================
+   VERIFY
+   ========================================================================= */
+.verify {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: clamp(1rem, 2.4vw, 1.5rem);
+  align-items: start;
+}
+@media (min-width: 960px) {
+  .verify { grid-template-columns: minmax(0, .9fr) minmax(0, 1.25fr); }
+}
+.verify__list { gap: 1.1rem; }
+.verify__list:hover { transform: none; }
+.verify__code { min-width: 0; }
+.verify__code .code { font-size: .84rem; }
+
+/* =========================================================================
+   COMPARISON TABLE
+   ========================================================================= */
+.table-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--hair);
+  border-radius: var(--radius);
+  background: var(--glass);
+}
+.cmp {
+  width: 100%;
+  min-width: 760px;
+  border-collapse: collapse;
+  font-size: .92rem;
+  line-height: 1.5;
+}
+.cmp th, .cmp td {
+  padding: .85rem 1rem;
+  text-align: left;
+  vertical-align: top;
+  border-bottom: 1px solid var(--hair);
+}
+.cmp tbody tr:last-child th, .cmp tbody tr:last-child td { border-bottom: 0; }
+.cmp thead th {
+  font-family: var(--mono);
+  font-size: .8rem;
+  font-weight: 600;
+  letter-spacing: .02em;
+  color: var(--text-2);
+  background: rgba(255,255,255,0.02);
+}
+.cmp tbody th { color: var(--text); font-weight: 600; width: 15%; }
+.cmp td { color: var(--muted); }
+.cmp .cmp__ours { color: var(--text); background: rgba(122,169,255,0.07); }
+.cmp thead .cmp__ours {
+  background: var(--grad); -webkit-background-clip: text; background-clip: text; color: transparent;
+  box-shadow: inset 0 -2px 0 rgba(122,169,255,0.5);
+}
+.cmp .inline { font-size: .82em; white-space: nowrap; }
+
+/* =========================================================================
+   FAQ
+   ========================================================================= */
+.faq { display: grid; gap: .75rem; max-width: 52rem; }
+.faq__item {
+  border: 1px solid var(--hair);
+  border-radius: var(--radius-sm);
+  background: var(--glass);
+  transition: border-color .18s ease, background .18s ease;
+}
+.faq__item[open] { border-color: var(--hair-strong); background: var(--glass-2); }
+.faq__item summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1rem 1.2rem;
+  cursor: pointer;
+  list-style: none;
+  border-radius: inherit;
+}
+.faq__item summary::-webkit-details-marker { display: none; }
+.faq__item summary::after {
+  content: "+";
+  flex: none;
+  font-family: var(--mono);
+  font-size: 1.1rem;
+  color: var(--c-teal);
+  transition: transform .18s ease;
+}
+.faq__item[open] summary::after { transform: rotate(45deg); }
+.faq__q { font-size: 1.02rem; font-weight: 620; letter-spacing: -0.005em; line-height: 1.4; }
+.faq__item p {
+  padding: 0 1.2rem 1.15rem;
+  color: var(--text-2);
+  font-size: .96rem;
+  line-height: 1.62;
+}
+.faq__item .inline { white-space: normal; }
 
 /* =========================================================================
    MOTION

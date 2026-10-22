@@ -1,0 +1,16 @@
+{
+  "name": "varde — minimal, signed distroless container base images",
+  "short_name": "varde",
+  "description": "Free, non-root distroless container base images built with Nix: cosign-signed, with SBOM and SLSA provenance.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "browser",
+  "background_color": "#070A10",
+  "theme_color": "#070A10",
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" },
+    { "src": "favicon.svg", "sizes": "any", "type": "image/svg+xml" }
+  ]
+}

@@ -1,0 +1,13 @@
+# varde — https://rorvik.xyz/varde/
+#
+# NOTE: crawlers only read robots.txt at the origin root, so this file (served
+# at /varde/robots.txt) is NOT consulted. The live one is
+# https://rorvik.xyz/robots.txt, from the mathiasror.github.io repository. To
+# advertise this site's sitemap, add the Sitemap line below to that file (a
+# robots.txt may list several), or submit the sitemap in Search Console.
+# Kept here as the reference copy of the rules this site wants.
+
+User-agent: *
+Allow: /varde/
+
+Sitemap: https://rorvik.xyz/varde/sitemap.xml
