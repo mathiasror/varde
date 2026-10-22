@@ -128,6 +128,12 @@ jobs:
       - id: claude
         if: steps.key.outputs.has_key == 'true'
         uses: anthropics/claude-code-action@6b6870e649b5ff408753befeaee5fc7989d4e6a9 # v1.0.258
+        env:
+          # The real control: scrub the Anthropic key and the Actions token
+          # from every command the agent runs (and PID-isolate it with
+          # bubblewrap where available). The nix flag denylist below is only
+          # a speed bump — `nix eval -f file.nix` is impure without any flag.
+          CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: "1"
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           github_token: ${{ secrets.GITHUB_TOKEN }} # read-only here
@@ -247,8 +253,14 @@ jobs:
             git diff --cached --raw HEAD
             exit 1
           fi
+          # Plain printable-ASCII paths only: anything else is quoted by
+          # --name-only and could slip past a prefix check.
+          if git diff --cached --name-only -z HEAD | LC_ALL=C grep -qzv '^[[:print:]]*$'; then
+            echo "::error::the proposed fix has a path with control or non-ASCII characters; refusing"
+            exit 1
+          fi
           # GITHUB_TOKEN cannot write workflows anyway; fail clearly instead.
-          if git diff --cached --name-only HEAD | grep -q '^\.github/'; then
+          if git diff --cached --name-only -z HEAD | grep -qz '^\.github/'; then
             echo "::error::the proposed fix touches .github/; refusing"
             git diff --cached --name-only HEAD
             exit 1
