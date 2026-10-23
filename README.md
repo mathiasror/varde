@@ -528,6 +528,12 @@ docs/design.md                  # design notes
 LICENSE                         # Apache-2.0
 ```
 
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for building locally, adding an image
+or tag, and CVE/VEX triage. Report security issues privately as described in
+[SECURITY.md](SECURITY.md), not in public issues.
+
 ## License
 
 varde's own build definitions — the Nix flake, the image modules under

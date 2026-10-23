@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/mathiasror/varde/security/advisories/new
+    about: Vulnerabilities in varde's own build (flake, image modules, lib, workflows) go here, privately. See SECURITY.md.
+  - name: Published security advisories
+    url: https://github.com/mathiasror/varde/security/advisories
+    about: Advisories varde has already published.
+  - name: Scanning and verifying images
+    url: https://github.com/mathiasror/varde#scanning-varde-images
+    about: How to scan with grype and apply the OpenVEX before filing a CVE issue.
