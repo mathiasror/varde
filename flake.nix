@@ -268,7 +268,7 @@
       );
 
       # `nix eval --json .#ciMatrix`     -> [{image,tag,attr,sbomName,libc}, ...]
-      # `nix eval --json .#latestTags`   -> {jre="21"; python="3.13"; ...}  (version; CI resolves default libc)
+      # `nix eval --json .#latestTags`   -> {jre="21"; python="3.14"; ...}  (version; CI resolves default libc)
       # `nix eval --json .#imageAliases` -> {go="static"; rust="glibc";}    (published as mirror digests)
       ciMatrix = map (e: { inherit (e) image tag attr sbomName libc; }) (entriesFor "x86_64-linux");
 

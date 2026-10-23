@@ -282,11 +282,11 @@
           <li class="card reveal">
             <div class="card__top">
               <h3 class="card__name">varde-python</h3>
-              <ul class="pills"><li>3.11</li><li>3.12</li><li>3.13</li></ul>
+              <ul class="pills"><li>3.11</li><li>3.12</li><li>3.13</li><li>3.14</li></ul>
             </div>
             <p class="card__desc">Python apps. The CPython interpreter only — no pip, no shell. COPY your resolved deps in.</p>
             <div class="ref">
-              <code id="img-python" class="ref__code"><span class="tk-key">FROM</span> ghcr.io/mathiasror/varde-python:3.13</code>
+              <code id="img-python" class="ref__code"><span class="tk-key">FROM</span> ghcr.io/mathiasror/varde-python:3.14</code>
               <button class="btn-copy btn-copy--sm" type="button" data-target="img-python" aria-label="Copy varde-python reference">
                 <svg class="ic ic-copy" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" d="M9 9h10v10H9zM5 15V5h10"/></svg>
                 <svg class="ic ic-check" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" d="m5 13 4 4L19 7"/></svg>
@@ -567,12 +567,12 @@
                 </button>
               </div>
 <pre class="code"><code id="use-python"><span class="ln tk-c"># deps stage: alpine = musl, matching the default musl runtime</span>
-<span class="ln"><span class="tk-key">FROM</span> <span class="tk-img">python:3.13-alpine</span> AS deps</span>
+<span class="ln"><span class="tk-key">FROM</span> <span class="tk-img">python:3.14-alpine</span> AS deps</span>
 <span class="ln"><span class="tk-key">WORKDIR</span> <span class="tk-path">/build</span></span>
 <span class="ln"><span class="tk-key">COPY</span> requirements.txt .</span>
 <span class="ln"><span class="tk-key">RUN</span> pip install --no-cache-dir --target=/app/site-packages -r requirements.txt</span>
 <span class="ln"></span>
-<span class="ln"><span class="tk-key">FROM</span> <span class="tk-img">ghcr.io/mathiasror/varde-python:3.13</span></span>
+<span class="ln"><span class="tk-key">FROM</span> <span class="tk-img">ghcr.io/mathiasror/varde-python:3.14</span></span>
 <span class="ln"><span class="tk-key">COPY</span> --from=deps /app/site-packages <span class="tk-path">/app/site-packages</span></span>
 <span class="ln"><span class="tk-key">COPY</span> main.py <span class="tk-path">/app/main.py</span></span>
 <span class="ln tk-c"># no shell to "activate a venv" — put the deps on the import path</span>

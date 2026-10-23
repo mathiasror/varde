@@ -8,8 +8,8 @@
 # `fhs = true` provides an FHS libc so wheels' externally-compiled .so
 # extensions load at runtime.
 #
-# Built for both libcs: the bare tag (e.g. :3.13) is musl; opt into glibc with
-# the :3.13-glibc tag. musl wheels are the musllinux ones; glibc wheels manylinux.
+# Built for both libcs: the bare tag (e.g. :3.14) is musl; opt into glibc with
+# the :3.14-glibc tag. musl wheels are the musllinux ones; glibc wheels manylinux.
 {
   pkgs,
   vardeLib,
@@ -140,7 +140,7 @@ let
 in
 {
   description = "Minimal distroless CPython runtime for Python apps";
-  latest = "3.13"; # current default release
+  latest = "3.14"; # current default release (nixpkgs' python3)
   variants = vardeLib.mkVariants pkgs {
     versions = {
       "3.11" = {
@@ -151,6 +151,9 @@ in
       };
       "3.13" = {
         spec = p: pySpec p p.python313;
+      };
+      "3.14" = {
+        spec = p: pySpec p p.python314;
       };
     };
   };

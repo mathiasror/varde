@@ -9,7 +9,7 @@ Use GitHub's private vulnerability reporting: go to the repository's
 (<https://github.com/mathiasror/varde/security/advisories/new>). This opens a
 private advisory visible only to the maintainers.
 
-Please include the affected image and tag (e.g. `varde-python:3.13`), the
+Please include the affected image and tag (e.g. `varde-python:3.14`), the
 architecture, and enough detail to reproduce. We aim to acknowledge reports
 within a few days.
 

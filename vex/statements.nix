@@ -221,6 +221,7 @@ in
           "python311"
           "python312"
           "python313"
+          "python314"
         ];
     cves = [ "CVE-2024-3220" ];
     status = "not_affected";
@@ -240,6 +241,7 @@ in
           "python311"
           "python312"
           "python313"
+          "python314"
         ];
     cves = [ "CVE-2026-3479" ];
     status = "not_affected";
