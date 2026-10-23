@@ -36,7 +36,7 @@ VEX and provenance, see
 | Image | Tags | Runs | Drop-in contract |
 | --- | --- | --- | --- |
 | `varde-jre` | `17`* `21` `25` `latest`(=21) | JVM apps (Java/Kotlin) | `COPY app.jar /app/app.jar` (fat/boot jar) |
-| `varde-python` | `3.11` `3.12` `3.13` `latest`(=3.13) | Python apps | `COPY` interpreter deps + code into `/app` |
+| `varde-python` | `3.11` `3.12` `3.13` `3.14` `latest`(=3.14) | Python apps | `COPY` interpreter deps + code into `/app` |
 | `varde-node` | `22` `24` `latest`(=24) | Node.js apps | `COPY node_modules` + code into `/app` |
 | `varde-php` | `8.3` `8.4` `8.5` `latest`(=8.5) | PHP apps (cli + `php-fpm`) | `COPY` code + `vendor/` into `/app` |
 
@@ -79,19 +79,20 @@ musl** (the default); append **`-glibc`** to opt in to glibc:
 
 ```dockerfile
 # musl (default)
-FROM ghcr.io/mathiasror/varde-python:3.13
+FROM ghcr.io/mathiasror/varde-python:3.14
 # glibc (opt-in)
-FROM ghcr.io/mathiasror/varde-python:3.13-glibc
+FROM ghcr.io/mathiasror/varde-python:3.14-glibc
 ```
 
 musl is the default because a smaller libc means less to patch and a smaller
 attack surface. Reach for `-glibc` when something needs it — a wheel with only
 manylinux (glibc) binaries, a native addon built against glibc, or a prebuilt
 dependency that assumes glibc. Per-arch tags are libc-qualified, e.g.
-`:21-musl-arm64` or `:3.13-glibc-amd64`. Bare-version per-arch tags such as
-`varde-jre:21-amd64` predate the libc split; CI keeps them on the glibc
-builds they always pointed at (`:21-glibc-amd64`), but prefer the
-libc-qualified form so the libc is explicit.
+`:21-musl-arm64` or `:3.14-glibc-amd64`. The older bare-version per-arch tags
+(`varde-jre`, `varde-python` and `varde-node` `:<ver>-amd64` / `:<ver>-arm64`)
+predate the libc split, when every image was glibc, so CI keeps them on the
+**glibc** build (`:<ver>-glibc-<arch>`), not on the bare tag's musl. Prefer
+the libc-qualified form so the libc is explicit.
 
 *`varde-jre:17` is **glibc-only** — Adoptium ships no aarch64 Alpine/musl JRE for
 JDK 17; `:21` and `:25` default to musl. `varde-mysql` is **glibc-only** — musl
@@ -105,13 +106,32 @@ no other applets) because PostgreSQL's `initdb` bootstraps through libc
 `popen`/`system`, which hardcode `/bin/sh`. Every other production image is
 shell-free.
 
+### `-debug` tags: for troubleshooting only
+
+Every tag has a **`-debug`** sibling, for example `varde-python:3.13-debug`,
+`:3.13-glibc-debug`, `varde-static:latest-debug` or `varde-go:latest-debug`. It
+is the same image, with the same layers, user (`1000:1000`), entrypoint and cmd,
+plus a static **busybox** (`sh`, `ls`, `ps`, `wget`, `netstat`, …) at `/busybox`
+on `PATH`. It is signed and attested like the production tag, and its scan
+includes busybox.
+
+> **Never run a `-debug` tag in production.** It puts back exactly the shell
+> and userland that varde leaves out. Use it to troubleshoot: as a
+> `kubectl debug` ephemeral container, as a sidecar that shares a container's
+> namespaces, or in place of the production tag on a throwaway copy. See
+> **[docs/debugging.md](docs/debugging.md)**.
+
+The "no shell" guarantees below apply to the production tags, which never
+contain the busybox layer. There are no per-arch `-debug` tags; pull a specific
+platform with `--platform`.
+
 ### Every image guarantees
 
 | Property | Value |
 | --- | --- |
 | User | `1000:1000` (`app`, non-root) |
 | Working directory | `/app` (owned by `1000:1000`) |
-| Shell / package manager | **none** (except `varde-postgres`'s static `ash`, above) |
+| Shell / package manager | **none** (except `varde-postgres`'s static `ash`, above; `-debug` tags add busybox, see above) |
 | TLS | CA bundle at `/etc/ssl/certs/ca-certificates.crt` (`SSL_CERT_FILE` set): nixpkgs' Mozilla-derived `cacert` minus the roots varde distrusts (currently the eMudhra/Sectigo roots behind the October 2026 intermediate key compromise; a build check proves the compromised chains are rejected, see [`lib/distrust`](lib/distrust)). Node reads this bundle, and the JRE's `cacerts` is generated from it |
 | Timezones | tzdata at `/usr/share/zoneinfo` (`TZDIR` set) |
 | Writable paths | `/app`, `/tmp` (sticky) |
@@ -123,7 +143,10 @@ build fails whose runtime closure contains a store path named like a known
 shell (`bash`, `dash`, `busybox`, `mksh`, `zsh`, `toybox`, `ksh`, `fish`,
 `tcsh`, `yash`, `nushell`, …), `coreutils`, a runtime's package-manager output
 (`npm`, `pip`), or a `-dev` output. Postgres's disclosed static `ash` is the
-sole, explicit exemption, pinned to that exact derivation. The guard is only
+sole, explicit exemption, pinned to that exact derivation. The `-debug` tags
+don't loosen it. Their production layers pass this same check unchanged, and
+the busybox they add is checked separately, exempting only that one busybox
+derivation. The guard is only
 as strong as its list — a shell nixpkgs names differently would pass — but a
 nixpkgs bump can never silently ship anything on it.
 
@@ -153,6 +176,9 @@ under [`examples/`](examples/) — each takes an `ARG BASE_IMAGE`, so you can
 - **mysql** — [`examples/mysql/simple/`](examples/mysql/simple/) (`--initialize-insecure`, then serve)
 - **rabbitmq** — [`examples/rabbitmq/simple/`](examples/rabbitmq/simple/) (config + plugins via `COPY`)
 - **memcached** — [`examples/memcached/simple/`](examples/memcached/simple/)
+
+To get a shell next to a running app without adding one to it, see
+[docs/debugging.md](docs/debugging.md).
 
 The shortest possible case (a static binary):
 
@@ -495,10 +521,13 @@ data-driven from the flake:
    image, generate the SBOM, grype-scan it (behind a known-CVE canary),
    Trivy-scan the image filesystem for secrets, smoke-test it, push it to GHCR by digest,
    sign + attest + verify it, and only then move the per-arch tag onto that
-   digest (all skipped on PRs).
+   digest (all skipped on PRs). The same leg does the same for the variant's
+   `-debug` sibling, except that the `-debug` sibling gets no per-arch tag.
 3. **manifest** — assembles multi-arch lists per libc tag, the bare-version and
    `:latest` / `:latest-glibc` aliases, and the `varde-go` / `varde-rust` alias
-   digests — from this run's verified per-arch digests, per image:tag pair. A
+   digests (each with its `-debug` twin) — from this run's verified per-arch
+   digests, per image:tag pair — then moves the pre-split `:<ver>-<arch>` tags
+   that still exist onto the `-glibc` children. A
    leg that failed or timed out holds back only the lists that need it (the
    job names them and goes red); every other pair is still refreshed.
 
@@ -543,11 +572,25 @@ whose lock reproduces it.
 hours. It re-runs the failed jobs of the newest `bump-lock` run on `main` and
 of the newest publishing (push or dispatch) `build-image` run on `main`, up to
 3 attempts in total, since most red weeks are cache-cold timeouts or flaky
-dependency tests; cancelled runs are left alone. It also checks freshness for
-each image's default tag in `.#latestTags`: the linux/amd64 image must carry a
-verified vuln attestation from the last 10 days. If anything is still wrong,
-it opens an issue labelled `rebuild-failed`, and closes it once things are
-green again.
+dependency tests; cancelled runs are left alone, and so is a run in which an
+image build failed twice in one job (`build.yml` already retries it once, so
+that is a real breakage). It also checks freshness for every tag a publish
+moves (`.#publishedTags`: each variant, bare-version, `:latest` and alias
+list, and the per-arch tags), on both linux/amd64 and linux/arm64: each must
+carry a verified vuln attestation from the last 10 days. If anything is still
+wrong, it opens an issue labelled `rebuild-failed`, and closes it once things
+are green again.
+
+A bump that stays red triggers
+[`rebuild-fix.yml`](.github/workflows/rebuild-fix.yml): Claude Code diagnoses
+the failed run and proposes a fix PR. After reading the diff, you run
+[`verify.yml`](.github/workflows/verify.yml) on it (full build + e2e, no
+publish) and merge. Nothing agent-written runs with the publish credentials
+before a person has read it. It authenticates with a Claude subscription
+token: run `claude setup-token`, then
+`gh secret set CLAUDE_CODE_OAUTH_TOKEN`. Without that secret the fix step
+skips with a warning. Actions must also be allowed to create pull requests
+(Settings → Actions → General).
 
 Maintaining a fork (Cachix setup, first publish, publish checklist): see
 [Maintaining a fork](docs/design.md#maintaining-a-fork).
@@ -623,14 +666,23 @@ scripts/e2e.sh                  # build examples on local bases, smoke + size bu
 .github/workflows/build.yml     # data-driven matrix build -> grype -> GHCR
 .github/workflows/bump-lock.yml # weekly flake.lock bump -> verify on a side branch -> land on main -> dispatch build
 .github/workflows/rebuild-watchdog.yml # retry failed rebuilds, flag stale images, track an issue
+.github/workflows/rebuild-fix.yml # agent-proposed fix PR for a bump that stays red
+.github/workflows/verify.yml    # full build + e2e of a branch, no publish (dispatch after review)
 .github/workflows/e2e.yml       # build + smoke-test the examples
 .github/workflows/pages.yml     # deploy the landing page to GitHub Pages
 .github/canary/                 # known-CVE SBOM fixture that guards the grype scan
 .github/dependabot.yml          # grouped version updates: SHA-pinned actions + example deps
 site/                           # landing page (static, no build step)
 docs/design.md                  # design notes
+docs/debugging.md               # debugging shell-less images (kubectl debug, -debug tags)
 LICENSE                         # Apache-2.0
 ```
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for building locally, adding an image
+or tag, and CVE/VEX triage. Report security issues privately as described in
+[SECURITY.md](SECURITY.md), not in public issues.
 
 ## License
 

@@ -25,9 +25,9 @@ ONLY=("$@")
 read -r -d '' TABLE <<'EOF' || true
 go-simple|examples/go/simple|image-static-latest|static|stdout:varde ok|10
 rust-simple|examples/rust/simple|image-glibc-latest|glibc|stdout:varde ok|55
-python-simple|examples/python/simple|image-python-3_13-musl|python|stdout:varde ok|185
-python-requirements-venv|examples/python/requirements-venv|image-python-3_13-musl|python|stdout:varde ok|190
-python-uv|examples/python/uv|image-python-3_13-musl|python|stdout:varde ok|190
+python-simple|examples/python/simple|image-python-3_14-musl|python|stdout:varde ok|185
+python-requirements-venv|examples/python/requirements-venv|image-python-3_14-musl|python|stdout:varde ok|190
+python-uv|examples/python/uv|image-python-3_14-musl|python|stdout:varde ok|190
 node-simple|examples/node/simple|image-node-24-musl|node|stdout:varde ok|215
 node-express|examples/node/express|image-node-24-musl|node|http:8080:/:varde ok|220
 jre-spring-boot|examples/jre/spring-boot-gradle|image-jre-21-musl|jre|http:8080:/:varde ok|320
@@ -71,7 +71,12 @@ declare -A BUILT
 build_base() { # $1=attr $2=name ; returns non-zero on failure
   [ -n "${BUILT[$2]:-}" ] && return 0
   echo "==> nix build .#$1  (base varde-$2)"
-  nix build -L ".#$1" || return 1
+  # One retry: a cache-cold base runs its dependencies' check phases, and a
+  # few of those are timing-flaky (see build.yml's "Build image" step).
+  nix build -L ".#$1" || {
+    echo "    nix build .#$1 failed; retrying once in case a dependency's test flaked"
+    nix build -L ".#$1"
+  } || return 1
   local ref
   ref=$(docker load -i result | sed -n 's/^Loaded image: //p' | head -n1) || return 1
   [ -n "$ref" ] || return 1

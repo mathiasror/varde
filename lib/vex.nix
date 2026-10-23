@@ -20,7 +20,11 @@
 # sbomComponent). grype matches a VEX product against the match's own package
 # purl, and qualifiers missing from the VEX side (outputhash=) are ignored.
 #
-# vexFor :: { pkgs, image, libc, timestamp, id } -> OpenVEX attrset (toJSON-able)
+# vexFor :: { pkgs, image, libc, debug ? false, timestamp, id } -> OpenVEX attrset (toJSON-able)
+#
+# `debug` is true for an image's -debug variant (lib/default.nix
+# buildDebugImage), which adds a full busybox. A statement marked
+# `notInDebug` is left out of its document (see vex/statements.nix).
 { lib }:
 let
   # Packages whose patches are mined for CVE ids. A package that an image does
@@ -84,6 +88,7 @@ in
       pkgs,
       image,
       libc,
+      debug ? false,
       timestamp,
       id,
     }:
@@ -140,6 +145,7 @@ in
             # `images` scopes a statement to some images: the same package
             # purl can be reachable in one image and dead code in another.
             && (s ? images -> lib.elem image s.images)
+            && !(debug && (s.notInDebug or false))
             && (s.pkg == "libc" -> libcDrv != null)
             && (s.pkg == "libc" || p ? ${s.pkg})
             && (s.when or (_: true)) p

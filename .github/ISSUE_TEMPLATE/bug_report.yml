@@ -1,0 +1,62 @@
+name: Bug report
+description: An image fails to run, misbehaves, or breaks its contract (a shell, root, a missing CA bundle, ...).
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        A security vulnerability in varde's own build goes to [private reporting](https://github.com/mathiasror/varde/security/advisories/new), not here. A CVE in a packaged component goes in the "Image is lagging a CVE fix" form.
+  - type: input
+    id: image
+    attributes:
+      label: Image and tag
+      description: As you pulled it.
+      placeholder: ghcr.io/mathiasror/varde-python:3.13
+    validations:
+      required: true
+  - type: input
+    id: digest
+    attributes:
+      label: Digest
+      description: "`crane digest <image> --platform linux/amd64`, or `docker inspect --format '{{index .RepoDigests 0}}' <image>`"
+      placeholder: sha256:...
+    validations:
+      required: true
+  - type: dropdown
+    id: arch
+    attributes:
+      label: Architecture
+      options:
+        - amd64
+        - arm64
+    validations:
+      required: true
+  - type: dropdown
+    id: libc
+    attributes:
+      label: libc
+      description: Bare tags are musl, `-glibc` tags are glibc. varde-jre:17 and varde-mysql are glibc only; varde-static has no libc.
+      options:
+        - musl (bare tag)
+        - glibc (-glibc tag, or a glibc-only image)
+        - none (varde-static / varde-go)
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you ran, what you expected, and what happened instead. Include the full error output.
+      value: |
+        Dockerfile or docker run command:
+
+        Expected:
+
+        Actual:
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Container runtime (Docker, Podman, Kubernetes) and version, host OS. If you built from source, the commit and the `nix build` attribute.

@@ -61,7 +61,48 @@ jobs:
       github.event_name != 'workflow_run' ||
       (github.event.workflow_run.conclusion == 'success' &&
        github.event.workflow_run.event != 'pull_request')
+    permissions:
+      contents: read
+      actions: read # list this PR's build-image runs (the wait step)
     steps:
+      # On a PR this starts alongside the PR's build-image run. When the PR
+      # changes a shared musl input (an overlay, lib/, the lock), every
+      # musl base is new to Cachix, so this job compiled the whole chain
+      # again on one runner, racing build-image instead of reusing it, and
+      # any flaky test in a dependency's check phase failed it (seen
+      # 2026-08-06, python3.14-filelock, run 31073369288). Wait for that
+      # run first: its legs push every path they finish, so the bases
+      # below are then mostly cache hits. Same-repo PRs only (a fork's
+      # build cannot push to Cachix), capped so a stuck build cannot eat
+      # this job's budget; past the cap it builds anyway.
+      - name: Wait for this PR's build-image run to warm Cachix
+        if: >-
+          github.event_name == 'pull_request' &&
+          github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          start=$(date +%s)
+          while :; do
+            runs=$(gh run list -R "$GITHUB_REPOSITORY" -w build.yml -c "$SHA" -e pull_request \
+                     --json databaseId,status)
+            total=$(jq length <<<"$runs")
+            open=$(jq -r '[.[] | select(.status != "completed") | .databaseId] | join(" ")' <<<"$runs")
+            waited=$(( ($(date +%s) - start) / 60 ))
+            # build.yml is path-filtered: an examples-only PR has no run.
+            if [ "$total" -eq 0 ] && [ "$waited" -ge 3 ]; then
+              echo "no build-image run for $SHA; building cold"; break
+            fi
+            if [ "$total" -gt 0 ] && [ -z "$open" ]; then
+              echo "build-image finished for $SHA after ${waited}m"; break
+            fi
+            if [ "$waited" -ge 150 ]; then
+              echo "::warning::build-image ($open) still running after ${waited}m; building without waiting further"; break
+            fi
+            sleep 60
+          done
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # In a workflow_run run github.sha is the *current* tip of main, not

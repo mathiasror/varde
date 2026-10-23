@@ -15,7 +15,7 @@
 #
 # The first line MUST be the ARG so `--build-arg BASE_IMAGE=...` can retarget it
 # (the CI e2e harness builds every example against the locally-built base).
-ARG BASE_IMAGE=ghcr.io/mathiasror/varde-python:3.13
+ARG BASE_IMAGE=ghcr.io/mathiasror/varde-python:3.14
 
 FROM ${BASE_IMAGE}
 

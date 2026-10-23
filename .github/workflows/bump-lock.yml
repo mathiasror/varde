@@ -63,7 +63,8 @@ env:
 jobs:
   bump:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # Mostly the wait below; the bump itself takes about a minute.
+    timeout-minutes: 330
     permissions:
       contents: write # bump branch ref + createCommitOnBranch
       actions: write # gh workflow run build.yml (unchanged-lock path)
@@ -71,8 +72,41 @@ jobs:
       changed: ${{ steps.commit.outputs.changed }}
       sha: ${{ steps.commit.outputs.sha }}
     steps:
+      # Queue behind a publish that is already running on main instead of
+      # racing it. A merge that touches images starts a full ~78-leg
+      # publishing matrix; a bump started next to it puts a second full
+      # matrix on the same runner pool, so both crawl, and on 2026-10-22 and
+      # 10-23 the push publishes (39850117458, 39917139523) were cancelled
+      # to make room. A publish cancelled midway leaves its manifest lists
+      # behind its per-arch tags (39850117458 held back 21 lists). Waiting
+      # also means the verify below starts from the cache that publish just
+      # warmed, and the lock is resolved against main as of after the wait
+      # (the checkout below takes the branch, not the triggering sha).
+      - name: Wait for in-flight publishes on main
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          deadline=$(( $(date +%s) + 300 * 60 ))
+          while :; do
+            busy=$(gh run list -R "$GITHUB_REPOSITORY" -w build.yml -b main -L 20 \
+                     --json databaseId,status,event \
+                     --jq '[.[] | select(.status != "completed" and (.event == "push" or .event == "workflow_dispatch")) | .databaseId] | join(" ")')
+            [ -n "$busy" ] || break
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "::error::build-image run(s) $busy on main still running after 300 minutes; not bumping next to them. Re-run this workflow once they finish."
+              exit 1
+            fi
+            echo "waiting for build-image run(s) on main to finish: $busy"
+            sleep 120
+          done
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          # The branch as it is now, after the wait: a commit that landed
+          # meanwhile is the base the bump must build on, or land's
+          # fast-forward would be refused.
+          ref: ${{ github.ref }}
           # The commit goes through the GraphQL createCommitOnBranch mutation
           # (GH_TOKEN below), never `git push`, so git needs no credentials.
           persist-credentials: false
@@ -172,6 +206,7 @@ jobs:
     needs: [bump, verify-build]
     permissions:
       contents: read
+      actions: read # e2e.yml's job declares it (its PR-only wait step uses it)
     uses: ./.github/workflows/e2e.yml
     with:
       ref: ${{ needs.bump.outputs.sha }}
