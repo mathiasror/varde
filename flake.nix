@@ -172,8 +172,10 @@
         ) modules
       );
 
-      # One flat list of every {image, tag, attr, sbomName, drv, sbomApp} for a
-      # system. String fields are system-independent (used to derive CI matrix).
+      # One flat list of every {image, tag, baseTag, debug, attr, sbomName,
+      # drv, sbomApp} for a system: each variant, then its -debug sibling
+      # (tag "<baseTag>-debug", debug = true). String fields are
+      # system-independent (used to derive CI matrix).
       entriesFor =
         system:
         let
@@ -183,41 +185,66 @@
           toolsPkgs = import nixpkgs-tools { inherit system; };
         in
         lib.concatLists (
-          lib.mapAttrsToList (
-            image: m:
+          lib.concatLists (
             lib.mapAttrsToList (
-              tag: spec:
-              let
-                drv = vardeLib.buildImage pkgs {
-                  name = "varde-${image}";
-                  inherit tag;
-                  inherit (m) description;
-                  inherit spec;
-                };
-              in
-              {
-                inherit image tag drv;
-                # `libc` is a required spec field (see the lib/default.nix header);
-                # imageContents and buildSbomApp read it without a default, so a
-                # module that bypasses mkVariants/the base specs fails here, at
-                # eval (CI's setup job evals .#ciMatrix), rather than shipping a
-                # libc the SBOM does not know about.
-                libc =
-                  if spec ? libc then
-                    spec.libc
-                  else
-                    throw "image '${image}': variant \"${tag}\" has no `libc` — build it with vardeLib.mkVariants or staticSpec/glibcSpec/muslSpec (see the lib/default.nix header)";
-                attr = "image-${image}-${sanitize tag}";
-                sbomName = "sbom-${image}-${sanitize tag}";
-                # SBOM of the image tarball itself (see buildSbomApp).
-                sbomApp = vardeLib.buildSbomApp pkgs toolsPkgs {
-                  name = "varde-${image}-${sanitize tag}";
-                  inherit spec;
-                  image = drv;
-                };
-              }
-            ) m.variants
-          ) evaluated.${system}
+              image: m:
+              lib.mapAttrsToList (
+                tag: spec:
+                let
+                  drv = vardeLib.buildImage pkgs {
+                    name = "varde-${image}";
+                    inherit tag;
+                    inherit (m) description;
+                    inherit spec;
+                  };
+                  # The variant's -debug sibling: drv plus a busybox layer
+                  # (lib/default.nix buildDebugImage). It is an entry of its
+                  # own, so it gets its own package, SBOM app and VEX, but
+                  # ciMatrix folds it into its base's row: CI builds and
+                  # publishes both on one leg (see ciMatrix below).
+                  debugDrv = vardeLib.buildDebugImage pkgs {
+                    name = "varde-${image}";
+                    tag = "${tag}-debug";
+                    inherit (m) description;
+                    inherit spec;
+                    base = drv;
+                  };
+                  entry =
+                    debug: drv:
+                    let
+                      t = if debug then "${tag}-debug" else tag;
+                    in
+                    {
+                      inherit image debug drv;
+                      tag = t;
+                      baseTag = tag;
+                      # `libc` is a required spec field (see the lib/default.nix header);
+                      # imageContents and buildSbomApp read it without a default, so a
+                      # module that bypasses mkVariants/the base specs fails here, at
+                      # eval (CI's setup job evals .#ciMatrix), rather than shipping a
+                      # libc the SBOM does not know about.
+                      libc =
+                        if spec ? libc then
+                          spec.libc
+                        else
+                          throw "image '${image}': variant \"${tag}\" has no `libc` — build it with vardeLib.mkVariants or staticSpec/glibcSpec/muslSpec (see the lib/default.nix header)";
+                      attr = "image-${image}-${sanitize t}";
+                      sbomName = "sbom-${image}-${sanitize t}";
+                      # SBOM of the image tarball itself (see buildSbomApp).
+                      sbomApp = vardeLib.buildSbomApp pkgs toolsPkgs {
+                        name = "varde-${image}-${sanitize t}";
+                        inherit spec;
+                        image = drv;
+                      };
+                    };
+                in
+                [
+                  (entry false drv)
+                  (entry true debugDrv)
+                ]
+              ) m.variants
+            ) evaluated.${system}
+          )
         );
 
       # Which tag each image publishes as :latest. A declared `latest` must name
@@ -267,10 +294,41 @@
         system: lib.listToAttrs (map (e: lib.nameValuePair e.sbomName e.sbomApp) (entriesFor system))
       );
 
-      # `nix eval --json .#ciMatrix`     -> [{image,tag,attr,sbomName,libc}, ...]
+      # `nix eval --json .#ciMatrix`     -> [{image,tag,attr,sbomName,libc,debugTag,debugAttr,debugSbomName}, ...]
       # `nix eval --json .#latestTags`   -> {jre="21"; python="3.13"; ...}  (version; CI resolves default libc)
       # `nix eval --json .#imageAliases` -> {go="static"; rust="glibc";}    (published as mirror digests)
-      ciMatrix = map (e: { inherit (e) image tag attr sbomName libc; }) (entriesFor "x86_64-linux");
+      #
+      # One row per production variant. Its -debug sibling rides on the same
+      # row (debugTag/debugAttr/debugSbomName) instead of getting a row of its
+      # own: build.yml builds, scans, signs and publishes it on the same leg,
+      # reusing the base tarball, store closure and scanner DBs already there,
+      # rather than paying a second runner, Nix install and closure fetch for
+      # an image that is the base plus one busybox layer.
+      ciMatrix =
+        let
+          entries = entriesFor "x86_64-linux";
+          debugOf = lib.listToAttrs (
+            map (e: lib.nameValuePair "${e.image}:${e.baseTag}" e) (lib.filter (e: e.debug) entries)
+          );
+        in
+        map (
+          e:
+          let
+            d = debugOf."${e.image}:${e.tag}";
+          in
+          {
+            inherit (e)
+              image
+              tag
+              attr
+              sbomName
+              libc
+              ;
+            debugTag = d.tag;
+            debugAttr = d.attr;
+            debugSbomName = d.sbomName;
+          }
+        ) (lib.filter (e: !e.debug) entries);
 
       # `nix eval --json .#vex.<system>.<sbomName>` -> the OpenVEX document for
       # that image (lib/vex.nix). CI passes it to grype (--vex) and attests it
@@ -283,7 +341,7 @@
             lib.nameValuePair e.sbomName (
               vardeVex.vexFor {
                 pkgs = pkgsBySystem.${system};
-                inherit (e) image libc;
+                inherit (e) image libc debug;
                 timestamp = vexTimestamp;
                 id = "https://github.com/mathiasror/varde/vex/${e.image}-${e.tag}-${system}@${self.rev or "dirty"}";
               }

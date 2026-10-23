@@ -14,6 +14,10 @@ name: build-image
 # that did not finish holds back only its own lists, never the whole refresh.
 # The build matrix and the :latest mapping come straight from the flake
 # (.#ciMatrix / .#latestTags), so adding an image module needs no workflow changes.
+# Each leg also builds, scans, signs, attests and verifies the variant's
+# -debug sibling (the same image plus busybox, for troubleshooting only), and
+# the manifest job publishes a <tag>-debug list beside every list; there are
+# no per-arch -debug tags.
 # Pull requests build only the images their diff touches (fail-open — any shared
 # or unrecognized input means the full matrix); push/dispatch always build
 # everything, so publishes are never scoped. Publishing is main-only: push is
@@ -305,6 +309,50 @@ jobs:
           ATTR: ${{ matrix.attr }}
         run: nix build -L ".#${ATTR}"
 
+      # The variant's -debug sibling (lib/default.nix buildDebugImage): the
+      # tarball just built, unchanged, plus a busybox layer. It rides on this
+      # leg (flake.nix ciMatrix) so it costs one small layer build and a second
+      # scan, not a second runner. continue-on-error: a debug-only breakage
+      # (busybox stops building after a bump, say) must not hold back the
+      # production image's refresh. Every later debug step keys on this
+      # step's outcome, and the job's last step turns the leg red regardless.
+      - name: Build + check the -debug variant
+        id: debug
+        continue-on-error: true
+        env:
+          ATTR: ${{ matrix.debugAttr }}
+          SBOM: ${{ matrix.debugSbomName }}
+        shell: bash
+        run: |
+          nix build -L ".#${ATTR}" -o result-debug
+          mkdir -p debug
+          nix run ".#${SBOM}" -- debug/sbom.cdx.json
+          jq -e '.components | length > 0' debug/sbom.cdx.json >/dev/null
+          sys="$(nix eval --raw --impure --expr builtins.currentSystem)"
+          nix eval --json ".#vex.${sys}.${SBOM}" > debug/vex.openvex.json
+          jq -e '.statements | type == "array"' debug/vex.openvex.json >/dev/null
+          # The -debug contract, checked on what docker actually loads:
+          base=$(docker load -i result | sed -n 's/^Loaded image: //p' | head -n1)
+          dbg=$(docker load -i result-debug | sed -n 's/^Loaded image: //p' | head -n1)
+          # 1) it is the production image's exact layers plus new ones on top;
+          layers(){ docker image inspect -f '{{json .RootFS.Layers}}' "$1"; }
+          jq -en --argjson b "$(layers "$base")" --argjson d "$(layers "$dbg")" \
+            '($d | length) > ($b | length) and $d[0:($b | length)] == $b' >/dev/null \
+            || { echo "$dbg does not extend $base's layers" >&2; exit 1; }
+          # 2) the same user, workdir, entrypoint, cmd and stop signal;
+          cfg='{{json .Config.User}} {{json .Config.WorkingDir}} {{json .Config.Entrypoint}} {{json .Config.Cmd}} {{json .Config.StopSignal}}'
+          [ "$(docker image inspect -f "$cfg" "$base")" = "$(docker image inspect -f "$cfg" "$dbg")" ] \
+            || { echo "$dbg's runtime config differs from $base's" >&2; exit 1; }
+          # 3) busybox on PATH, running as 1000:1000;
+          out=$(docker run --rm --entrypoint sh "$dbg" -c 'id -u; id -g; command -v ls')
+          [ "$out" = "$(printf '1000\n1000\n/busybox/ls')" ] \
+            || { echo "unexpected busybox check output from $dbg: $out" >&2; exit 1; }
+          # 4) and none of it leaked into production.
+          if docker run --rm --entrypoint /busybox/sh "$base" -c true 2>/dev/null; then
+            echo "$base has /busybox/sh" >&2; exit 1
+          fi
+          echo "-debug variant ok: $dbg"
+
       # syft reads the built tarball (see buildSbomApp in lib/default.nix), so
       # this needs nothing beyond `result` — no store closure to realise.
       - name: "Generate SBOM (from the image: system packages + runtime)"
@@ -352,6 +400,7 @@ jobs:
       - name: "Grype: system packages + runtime (SBOM scan)"
         env:
           IMAGE: ${{ matrix.image }}
+          DEBUG: ${{ steps.debug.outcome == 'success' }}
         run: |
           # Report-only: a base image should still publish so its SBOM/SARIF stays
           # visible (Security tab) for downstream to act on. Enforce hard gates in
@@ -362,55 +411,73 @@ jobs:
           # not_affected out of the table and the SARIF. They still land in
           # the JSON's ignoredMatches, and the step lists them below, so
           # nothing is hidden from the log.
-          scan_started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-          nix run --inputs-from . nixpkgs-tools#grype -- --vex vex.openvex.json \
-            -o table -o sarif=grype-sbom.sarif -o json="$RUNNER_TEMP/grype.json" sbom:sbom.cdx.json
-          scan_finished=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-          echo "Suppressed by VEX (reasons in vex.openvex.json):"
-          jq -r '.ignoredMatches[]? | "  \(.vulnerability.id) \(.artifact.name)@\(.artifact.version): \(.appliedIgnoreRules[0]["vex-status"])"' \
-            "$RUNNER_TEMP/grype.json" | sort -u
-          # grype leaves artifactLocation.uri empty — or "/" for a component
-          # with no file location, i.e. every hand-authored varde-extra-*
-          # identity — for SBOM inputs, and GitHub code scanning drops results
-          # without a file path — anchor findings to this image's Nix module.
-          jq --arg uri "images/${IMAGE}.nix" \
-            '(.runs[0].results[]?.locations[]?.physicalLocation.artifactLocation.uri) |= (if . == "" or . == "/" then $uri else . end)' \
-            grype-sbom.sarif > grype-sbom.sarif.tmp && mv grype-sbom.sarif.tmp grype-sbom.sarif
-          # Wrap THIS run's grype JSON (matches + the VEX-suppressed
-          # ignoredMatches) in cosign's vuln predicate
-          # (sigstore/cosign specs/COSIGN_VULN_ATTESTATION_SPEC.md); the sign
-          # step attaches it as a `cosign attest --type vuln` attestation. It
-          # is a point-in-time snapshot: the findings are only as current as
-          # the grype DB build recorded in scanner.db.version, and they go
-          # stale as new CVEs are published — rescan (see the README) for
-          # today's view. Built here, unconditionally, so a pinned-grype bump
-          # that changes the JSON shape fails on the PR / bump verify run,
-          # not mid-publish. cosign keeps only the spec's fields, so the DB
-          # build time rides in db.version (the full DB status stays in
-          # result.descriptor.db). Findings never fail this step; a missing
-          # descriptor field does.
-          jq -c \
-            --arg started "$scan_started" --arg finished "$scan_finished" \
-            --arg uri "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/attempts/${GITHUB_RUN_ATTEMPT}" \
-            --arg run "$GITHUB_RUN_ID" --arg builder "https://github.com/${GITHUB_WORKFLOW_REF}" '
-            (.descriptor.db.status // error("grype JSON has no .descriptor.db.status")) as $db
-            | {
-                invocation: {
-                  parameters: ["--vex", "vex.openvex.json", "sbom:sbom.cdx.json"],
-                  uri: $uri, event_id: $run, "builder.id": $builder
-                },
-                scanner: {
-                  uri: "https://github.com/anchore/grype",
-                  version: (.descriptor.version // error("grype JSON has no .descriptor.version")),
-                  db: {
-                    uri: ($db.from // error("grype JSON has no DB source")),
-                    version: "\($db.schemaVersion // error("no DB schemaVersion")) built \($db.built // error("no DB build time"))"
+          #
+          # Once per flavor: the production image (files at the top level)
+          # and, when its step succeeded, the -debug variant (files under
+          # debug/, the same names).
+          dirs=.; [ "$DEBUG" = true ] && dirs=". debug"
+          for d in $dirs; do (
+            cd "$d"
+            json="$RUNNER_TEMP/grype-${d/#./base}.json"
+            scan_started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+            nix run --inputs-from "$GITHUB_WORKSPACE" nixpkgs-tools#grype -- --vex vex.openvex.json \
+              -o table -o sarif=grype-sbom.sarif -o json="$json" sbom:sbom.cdx.json
+            scan_finished=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+            echo "Suppressed by VEX (reasons in vex.openvex.json):"
+            jq -r '.ignoredMatches[]? | "  \(.vulnerability.id) \(.artifact.name)@\(.artifact.version): \(.appliedIgnoreRules[0]["vex-status"])"' \
+              "$json" | sort -u
+            # grype leaves artifactLocation.uri empty — or "/" for a component
+            # with no file location, i.e. every hand-authored varde-extra-*
+            # identity — for SBOM inputs, and GitHub code scanning drops results
+            # without a file path — anchor findings to this image's Nix module.
+            jq --arg uri "images/${IMAGE}.nix" \
+              '(.runs[0].results[]?.locations[]?.physicalLocation.artifactLocation.uri) |= (if . == "" or . == "/" then $uri else . end)' \
+              grype-sbom.sarif > grype-sbom.sarif.tmp && mv grype-sbom.sarif.tmp grype-sbom.sarif
+            # Wrap THIS run's grype JSON (matches + the VEX-suppressed
+            # ignoredMatches) in cosign's vuln predicate
+            # (sigstore/cosign specs/COSIGN_VULN_ATTESTATION_SPEC.md); the sign
+            # step attaches it as a `cosign attest --type vuln` attestation. It
+            # is a point-in-time snapshot: the findings are only as current as
+            # the grype DB build recorded in scanner.db.version, and they go
+            # stale as new CVEs are published — rescan (see the README) for
+            # today's view. Built here, unconditionally, so a pinned-grype bump
+            # that changes the JSON shape fails on the PR / bump verify run,
+            # not mid-publish. cosign keeps only the spec's fields, so the DB
+            # build time rides in db.version (the full DB status stays in
+            # result.descriptor.db). Findings never fail this step; a missing
+            # descriptor field does.
+            jq -c \
+              --arg started "$scan_started" --arg finished "$scan_finished" \
+              --arg uri "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/attempts/${GITHUB_RUN_ATTEMPT}" \
+              --arg run "$GITHUB_RUN_ID" --arg builder "https://github.com/${GITHUB_WORKFLOW_REF}" '
+              (.descriptor.db.status // error("grype JSON has no .descriptor.db.status")) as $db
+              | {
+                  invocation: {
+                    parameters: ["--vex", "vex.openvex.json", "sbom:sbom.cdx.json"],
+                    uri: $uri, event_id: $run, "builder.id": $builder
                   },
-                  result: .
-                },
-                metadata: {scanStartedOn: $started, scanFinishedOn: $finished}
-              }' "$RUNNER_TEMP/grype.json" > vuln.predicate.json
-          echo "vuln predicate: $(jq -r '"grype \(.scanner.version), DB \(.scanner.db.version), \(.scanner.result.matches | length) matches, \(.scanner.result.ignoredMatches | length) VEX-suppressed"' vuln.predicate.json)"
+                  scanner: {
+                    uri: "https://github.com/anchore/grype",
+                    version: (.descriptor.version // error("grype JSON has no .descriptor.version")),
+                    db: {
+                      uri: ($db.from // error("grype JSON has no DB source")),
+                      version: "\($db.schemaVersion // error("no DB schemaVersion")) built \($db.built // error("no DB build time"))"
+                    },
+                    result: .
+                  },
+                  metadata: {scanStartedOn: $started, scanFinishedOn: $finished}
+                }' "$json" > vuln.predicate.json
+            echo "vuln predicate: $(jq -r '"grype \(.scanner.version), DB \(.scanner.db.version), \(.scanner.result.matches | length) matches, \(.scanner.result.ignoredMatches | length) VEX-suppressed"' vuln.predicate.json)"
+          ) done
+          if [ "$DEBUG" = true ]; then
+            # Code scanning already gets every production finding above; file
+            # only what the -debug layer adds (grype's ruleId is
+            # <vulnerability>-<package>), or each one would alert twice.
+            jq --slurpfile base grype-sbom.sarif \
+              '[$base[0].runs[0].results[]?.ruleId] as $known
+               | .runs[0].results |= map(select(.ruleId | IN($known[]) | not))' \
+              debug/grype-sbom.sarif > debug/grype-sbom.delta.sarif
+          fi
 
       - name: "Trivy: secrets in the image filesystem"
         run: |
@@ -448,6 +515,17 @@ jobs:
           sarif_file: trivy-image.sarif
           category: image-${{ matrix.image }}-${{ matrix.tag }}-${{ matrix.arch }}
 
+      # Only the findings the -debug layer adds (see the grype step). No Trivy
+      # secret scan of the -debug image: its base layers are the ones scanned
+      # above, and the one new layer is a nixpkgs busybox.
+      - name: Upload -debug SBOM SARIF (findings the debug layer adds)
+        if: ${{ !cancelled() && !inputs.verify_only && hashFiles('debug/grype-sbom.delta.sarif') != '' }}
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
+        with:
+          sarif_file: debug/grype-sbom.delta.sarif
+          category: sbom-${{ matrix.image }}-${{ matrix.debugTag }}-${{ matrix.arch }}
+
       # overwrite: attempt 1's artifact survives into "re-run failed jobs", and
       # upload-artifact v4+ 409s on a same-name re-upload — without it a leg
       # that died anywhere after this step could never be re-run alone.
@@ -459,6 +537,9 @@ jobs:
             sbom.cdx.json
             vex.openvex.json
             vuln.predicate.json
+            debug/sbom.cdx.json
+            debug/vex.openvex.json
+            debug/vuln.predicate.json
           overwrite: true
 
       # The intermittent e2e "Failed to set alternate signal stack" abort only
@@ -597,6 +678,7 @@ jobs:
           ACTOR: ${{ github.actor }}
           TOKEN: ${{ secrets.GITHUB_TOKEN }}
           IMAGE: ${{ matrix.image }}
+          DEBUG: ${{ steps.debug.outcome == 'success' }}
         run: |
           owner=$(echo "$OWNER" | tr '[:upper:]' '[:lower:]')
           img="${REGISTRY}/${owner}/varde-${IMAGE}"
@@ -617,6 +699,21 @@ jobs:
             echo "IMAGE_DIGEST=${digest}"
             echo "IMAGE_REF=${img}@${digest}"
           } >> "$GITHUB_ENV"
+          # The -debug variant goes to the same repo, also untagged; its base
+          # layers are already there, so only the busybox layers upload. It
+          # gets no per-arch tag at all (see the publish step).
+          if [ "$DEBUG" = true ]; then
+            nix run --inputs-from . nixpkgs-tools#skopeo -- --insecure-policy copy \
+              --digestfile "$dgst" \
+              --dest-creds "${ACTOR}:${TOKEN}" \
+              docker-archive:result-debug \
+              "docker://${img}@@unknown-digest@@"
+            digest=$(cat "$dgst")
+            {
+              echo "DEBUG_IMAGE_DIGEST=${digest}"
+              echo "DEBUG_IMAGE_REF=${img}@${digest}"
+            } >> "$GITHUB_ENV"
+          fi
 
       # Keyless (GitHub OIDC) signature + CycloneDX SBOM, OpenVEX and grype
       # vuln-scan attestations on the just-pushed per-arch digest. The SBOM is
@@ -638,10 +735,16 @@ jobs:
           # failure was it returning non-JSON); three attempts, 10s/20s apart.
           # Both commands are idempotent on retry (same digest, new bundle).
           retry(){ local n=1; until "$@"; do [ "$n" -ge 3 ] && return 1; sleep $((n * 10)); n=$((n + 1)); done; }
-          retry "$RUNNER_TEMP/cosign/bin/cosign" sign --yes "$IMAGE_REF"
-          retry "$RUNNER_TEMP/cosign/bin/cosign" attest --yes --type cyclonedx --predicate sbom.cdx.json "$IMAGE_REF"
-          retry "$RUNNER_TEMP/cosign/bin/cosign" attest --yes --type openvex --predicate vex.openvex.json "$IMAGE_REF"
-          retry "$RUNNER_TEMP/cosign/bin/cosign" attest --yes --type vuln --predicate vuln.predicate.json "$IMAGE_REF"
+          # The production image (predicates at the top level), then the
+          # -debug variant if it was pushed (its own predicates, in debug/).
+          sign_all(){
+            retry "$RUNNER_TEMP/cosign/bin/cosign" sign --yes "$1"
+            retry "$RUNNER_TEMP/cosign/bin/cosign" attest --yes --type cyclonedx --predicate "$2/sbom.cdx.json" "$1"
+            retry "$RUNNER_TEMP/cosign/bin/cosign" attest --yes --type openvex --predicate "$2/vex.openvex.json" "$1"
+            retry "$RUNNER_TEMP/cosign/bin/cosign" attest --yes --type vuln --predicate "$2/vuln.predicate.json" "$1"
+          }
+          sign_all "$IMAGE_REF" .
+          if [ -n "${DEBUG_IMAGE_REF:-}" ]; then sign_all "$DEBUG_IMAGE_REF" debug; fi
 
       # SLSA build-provenance attestation (structured: builder, source commit,
       # invocation) on the same per-arch digest, pushed to GHCR as a referrer so
@@ -652,6 +755,14 @@ jobs:
         with:
           subject-name: ${{ env.IMAGE_NAME }}
           subject-digest: ${{ env.IMAGE_DIGEST }}
+          push-to-registry: true
+
+      - name: Attest build provenance (SLSA) of the -debug variant
+        if: needs.setup.outputs.publish == 'true' && env.DEBUG_IMAGE_DIGEST != ''
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.IMAGE_NAME }}
+          subject-digest: ${{ env.DEBUG_IMAGE_DIGEST }}
           push-to-registry: true
 
       # Gate the tag move on what consumers actually run. Exact identity, not
@@ -672,32 +783,37 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          cosign verify \
-            --certificate-identity "https://github.com/${GITHUB_WORKFLOW_REF}" \
-            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-            "$IMAGE_REF" >/dev/null
-          cosign verify-attestation --type cyclonedx \
-            --certificate-identity "https://github.com/${GITHUB_WORKFLOW_REF}" \
-            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-            "$IMAGE_REF" >/dev/null
-          cosign verify-attestation --type openvex \
-            --certificate-identity "https://github.com/${GITHUB_WORKFLOW_REF}" \
-            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-            "$IMAGE_REF" >/dev/null
-          # No pipefail in the default shell, but a failed verify leaves jq an
-          # empty stream, so `any` is false and -e fails the step either way.
-          cosign verify-attestation --type vuln \
-            --certificate-identity "https://github.com/${GITHUB_WORKFLOW_REF}" \
-            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-            "$IMAGE_REF" \
-            | jq -se --arg uri "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/attempts/${GITHUB_RUN_ATTEMPT}" \
-                'any(.[]; .payload | @base64d | fromjson | .predicate.invocation.uri == $uri)' >/dev/null \
-            || { echo "no verified vuln attestation from this run on $IMAGE_REF" >&2; exit 1; }
-          gh attestation verify "oci://${IMAGE_REF}" \
-            --repo "$GITHUB_REPOSITORY" \
-            --cert-identity "https://github.com/${GITHUB_WORKFLOW_REF}" \
-            --bundle-from-oci
-          echo "verified: signature + cyclonedx + openvex + vuln attestations + SLSA provenance on $IMAGE_REF"
+          # Run for the production image, then the -debug variant if pushed.
+          verify_all(){
+            cosign verify \
+              --certificate-identity "https://github.com/${GITHUB_WORKFLOW_REF}" \
+              --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+              "$1" >/dev/null
+            cosign verify-attestation --type cyclonedx \
+              --certificate-identity "https://github.com/${GITHUB_WORKFLOW_REF}" \
+              --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+              "$1" >/dev/null
+            cosign verify-attestation --type openvex \
+              --certificate-identity "https://github.com/${GITHUB_WORKFLOW_REF}" \
+              --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+              "$1" >/dev/null
+            # No pipefail in the default shell, but a failed verify leaves jq an
+            # empty stream, so `any` is false and -e fails the step either way.
+            cosign verify-attestation --type vuln \
+              --certificate-identity "https://github.com/${GITHUB_WORKFLOW_REF}" \
+              --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+              "$1" \
+              | jq -se --arg uri "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/attempts/${GITHUB_RUN_ATTEMPT}" \
+                  'any(.[]; .payload | @base64d | fromjson | .predicate.invocation.uri == $uri)' >/dev/null \
+              || { echo "no verified vuln attestation from this run on $1" >&2; exit 1; }
+            gh attestation verify "oci://$1" \
+              --repo "$GITHUB_REPOSITORY" \
+              --cert-identity "https://github.com/${GITHUB_WORKFLOW_REF}" \
+              --bundle-from-oci
+            echo "verified: signature + cyclonedx + openvex + vuln attestations + SLSA provenance on $1"
+          }
+          verify_all "$IMAGE_REF"
+          if [ -n "${DEBUG_IMAGE_REF:-}" ]; then verify_all "$DEBUG_IMAGE_REF"; fi
 
       # Every blob already exists in the repo, so this is one manifest PUT:
       # the tag flips atomically from its previous (signed) digest to this one.
@@ -710,6 +826,7 @@ jobs:
           TOKEN: ${{ secrets.GITHUB_TOKEN }}
           IMAGE: ${{ matrix.image }}
           TAG: ${{ matrix.tag }}
+          DEBUG_TAG: ${{ matrix.debugTag }}
           ARCH: ${{ matrix.arch }}
         run: |
           conf="$(mktemp)"; printf 'unqualified-search-registries = []\n' > "$conf"
@@ -726,6 +843,13 @@ jobs:
           # arches got here.
           mkdir -p "$RUNNER_TEMP/pushed"
           printf '%s' "$IMAGE_DIGEST" > "$RUNNER_TEMP/pushed/${IMAGE}.${TAG}.${ARCH}"
+          # The -debug digest, verified with the production one above, goes
+          # only to the manifest job: no per-arch -debug tags. The multi-arch
+          # <tag>-debug lists are the only way to pull it (by digest aside),
+          # which halves the tags a debug sibling would otherwise add.
+          if [ -n "${DEBUG_IMAGE_DIGEST:-}" ]; then
+            printf '%s' "$DEBUG_IMAGE_DIGEST" > "$RUNNER_TEMP/pushed/${IMAGE}.${DEBUG_TAG}.${ARCH}"
+          fi
 
       # One file per leg (unique name, so the manifest job's merged download
       # cannot clobber); overwrite so "re-run failed jobs" can re-upload. The
@@ -741,6 +865,16 @@ jobs:
           path: ${{ runner.temp }}/pushed/*
           retention-days: 7
           overwrite: true
+
+      # The -debug step is continue-on-error so it cannot hold back the
+      # production publish above; this makes its failure a red leg anyway.
+      - name: Fail the leg if the -debug variant failed
+        if: steps.debug.outcome == 'failure'
+        env:
+          TAG: ${{ matrix.debugTag }}
+        run: |
+          echo "::error::the ${TAG} variant failed to build or check (see 'Build + check the -debug variant'); the production image was handled normally"
+          exit 1
 
   manifest:
     name: multi-arch manifests
@@ -843,11 +977,20 @@ jobs:
           skipfile="$RUNNER_TEMP/manifest-skipped"
           legacyfile="$RUNNER_TEMP/legacy-arch-tags"
           : > "$planfile"; : > "$skipfile"; : > "$legacyfile"
-          plan(){
+          plan_one(){
             local src amd arm
             src=$(imgref "$2"); amd=$(dgst "$2" "$3" amd64); arm=$(dgst "$2" "$3" arm64)
             if [ -z "$amd" ] || [ -z "$arm" ]; then echo "$1" >> "$skipfile"; return 0; fi
             printf '%s %s@%s %s@%s\n' "$1" "$src" "$amd" "$src" "$arm" >> "$planfile"
+          }
+          # Every list gets a -debug twin from the legs' -debug digests (one per
+          # matrix row, see flake.nix ciMatrix): jre:21-musl-debug, :21-debug,
+          # :latest-debug, :latest-glibc-debug, varde-go:latest-debug, …
+          # Planned independently, so a held-back -debug list never holds back
+          # its production list.
+          plan(){
+            plan_one "$1" "$2" "$3"
+            plan_one "$1-debug" "$2" "$3-debug"
           }
           fail_skipped(){
             sort -u "$skipfile" -o "$skipfile"

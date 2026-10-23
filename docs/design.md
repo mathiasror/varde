@@ -22,7 +22,7 @@ The contract (user `1000:1000`, `/app`, the CA bundle and its distrusted
 roots, tzdata, writable paths, scanning) is the table under
 [Every image guarantees](../README.md#every-image-guarantees) in the README.
 The one exception to its shell row: postgres ships a minimal static `/bin/sh`
-because `initdb` bootstraps through libc `popen`/`system`.
+because `initdb` bootstraps through libc `popen`/`system`. The separate `-debug` tags add busybox; see below.
 
 The no-shell/no-package-manager row is enforced, not just intended: a
 build-time closure check (`lib/default.nix`) fails any image whose contents
@@ -32,6 +32,34 @@ package-manager output (nodejs' `npm`, python's pip), or a `-dev` output, with
 postgres's static `ash` as the sole declared exemption (`closureAllow`, matched
 against the full store path so it admits that one derivation only). It is a
 deny-list — exactly as strong as the list — not a proof of absence.
+
+### `-debug` variants
+
+Every tag also has a `<tag>-debug` sibling for troubleshooting (see
+[debugging.md](debugging.md)); it is never meant to run in production.
+`buildDebugImage` (`lib/default.nix`) takes the production image tarball as
+dockerTools' `fromImage`, so the production layers are copied byte for byte and
+keep their digests. It adds two layers on top: a static, musl-linked defconfig
+busybox, and `/busybox/<applet>` symlinks to it. `/busybox` is appended to
+`PATH`. User, workdir, entrypoint, cmd, stop signal and labels are the
+production image's (only the description label says "-debug"). The guard is not
+relaxed for production. The production layers were already checked by the
+production image's own guard, and the added busybox gets a separate guard whose
+only exemption is that exact busybox store path. The production derivations are
+unchanged by the debug variants' existence.
+
+CI builds each `-debug` variant on its production variant's leg rather than as a
+matrix row of its own (`ciMatrix` carries `debugAttr`/`debugSbomName`/`debugTag`).
+It gets its own SBOM, VEX, grype scan, signature, attestations and SLSA
+provenance, and the same verification before publishing. The build checks that
+its layers extend the production image's and that its runtime config is the
+same. It has no per-arch tags; the manifest job publishes a `-debug` list next
+to every list (`:3.13-debug`, `:3.13-glibc-debug`, `:latest-debug`,
+`varde-go:latest-debug`, …). A `-debug`-only failure turns the leg red but
+never holds back the production publish. The VEX of a `-debug` variant leaves
+out statements marked `notInDebug` (`vex/statements.nix`): its busybox has the
+applets that busybox-sandbox-shell's `not_affected` statements rely on being
+absent.
 
 Because there is no shell, the entrypoint runs the application directly. That
 means a self-contained artifact: a fat JAR, a static or dynamically-linked

@@ -106,13 +106,32 @@ no other applets) because PostgreSQL's `initdb` bootstraps through libc
 `popen`/`system`, which hardcode `/bin/sh`. Every other production image is
 shell-free.
 
+### `-debug` tags: for troubleshooting only
+
+Every tag has a **`-debug`** sibling, for example `varde-python:3.13-debug`,
+`:3.13-glibc-debug`, `varde-static:latest-debug` or `varde-go:latest-debug`. It
+is the same image, with the same layers, user (`1000:1000`), entrypoint and cmd,
+plus a static **busybox** (`sh`, `ls`, `ps`, `wget`, `netstat`, …) at `/busybox`
+on `PATH`. It is signed and attested like the production tag, and its scan
+includes busybox.
+
+> **Never run a `-debug` tag in production.** It puts back exactly the shell
+> and userland that varde leaves out. Use it to troubleshoot: as a
+> `kubectl debug` ephemeral container, as a sidecar that shares a container's
+> namespaces, or in place of the production tag on a throwaway copy. See
+> **[docs/debugging.md](docs/debugging.md)**.
+
+The "no shell" guarantees below apply to the production tags, which never
+contain the busybox layer. There are no per-arch `-debug` tags; pull a specific
+platform with `--platform`.
+
 ### Every image guarantees
 
 | Property | Value |
 | --- | --- |
 | User | `1000:1000` (`app`, non-root) |
 | Working directory | `/app` (owned by `1000:1000`) |
-| Shell / package manager | **none** (except `varde-postgres`'s static `ash`, above) |
+| Shell / package manager | **none** (except `varde-postgres`'s static `ash`, above; `-debug` tags add busybox, see above) |
 | TLS | CA bundle at `/etc/ssl/certs/ca-certificates.crt` (`SSL_CERT_FILE` set): nixpkgs' Mozilla-derived `cacert` minus the roots varde distrusts (currently the eMudhra/Sectigo roots behind the October 2026 intermediate key compromise; a build check proves the compromised chains are rejected, see [`lib/distrust`](lib/distrust)). Node reads this bundle, and the JRE's `cacerts` is generated from it |
 | Timezones | tzdata at `/usr/share/zoneinfo` (`TZDIR` set) |
 | Writable paths | `/app`, `/tmp` (sticky) |
@@ -124,7 +143,10 @@ build fails whose runtime closure contains a store path named like a known
 shell (`bash`, `dash`, `busybox`, `mksh`, `zsh`, `toybox`, `ksh`, `fish`,
 `tcsh`, `yash`, `nushell`, …), `coreutils`, a runtime's package-manager output
 (`npm`, `pip`), or a `-dev` output. Postgres's disclosed static `ash` is the
-sole, explicit exemption, pinned to that exact derivation. The guard is only
+sole, explicit exemption, pinned to that exact derivation. The `-debug` tags
+don't loosen it. Their production layers pass this same check unchanged, and
+the busybox they add is checked separately, exempting only that one busybox
+derivation. The guard is only
 as strong as its list — a shell nixpkgs names differently would pass — but a
 nixpkgs bump can never silently ship anything on it.
 
@@ -154,6 +176,9 @@ under [`examples/`](examples/) — each takes an `ARG BASE_IMAGE`, so you can
 - **mysql** — [`examples/mysql/simple/`](examples/mysql/simple/) (`--initialize-insecure`, then serve)
 - **rabbitmq** — [`examples/rabbitmq/simple/`](examples/rabbitmq/simple/) (config + plugins via `COPY`)
 - **memcached** — [`examples/memcached/simple/`](examples/memcached/simple/)
+
+To get a shell next to a running app without adding one to it, see
+[docs/debugging.md](docs/debugging.md).
 
 The shortest possible case (a static binary):
 
@@ -496,12 +521,13 @@ data-driven from the flake:
    image, generate the SBOM, grype-scan it (behind a known-CVE canary),
    Trivy-scan the image filesystem for secrets, smoke-test it, push it to GHCR by digest,
    sign + attest + verify it, and only then move the per-arch tag onto that
-   digest (all skipped on PRs).
+   digest (all skipped on PRs). The same leg does the same for the variant's
+   `-debug` sibling, except that the `-debug` sibling gets no per-arch tag.
 3. **manifest** — assembles multi-arch lists per libc tag, the bare-version and
    `:latest` / `:latest-glibc` aliases, and the `varde-go` / `varde-rust` alias
-   digests — from this run's verified per-arch digests, per image:tag pair —
-   then moves the pre-split `:<ver>-<arch>` tags that still exist onto the
-   `-glibc` children. A
+   digests (each with its `-debug` twin) — from this run's verified per-arch
+   digests, per image:tag pair — then moves the pre-split `:<ver>-<arch>` tags
+   that still exist onto the `-glibc` children. A
    leg that failed or timed out holds back only the lists that need it (the
    job names them and goes red); every other pair is still refreshed.
 
@@ -632,6 +658,7 @@ scripts/e2e.sh                  # build examples on local bases, smoke + size bu
 .github/dependabot.yml          # grouped version updates: SHA-pinned actions + example deps
 site/                           # landing page (static, no build step)
 docs/design.md                  # design notes
+docs/debugging.md               # debugging shell-less images (kubectl debug, -debug tags)
 LICENSE                         # Apache-2.0
 ```
 
