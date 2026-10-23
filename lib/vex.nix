@@ -2,14 +2,17 @@
 #
 # grype matches Nix store contents to NVD by CPE and compares upstream
 # versions, so a CVE that nixpkgs fixed with a patch, without a version bump,
-# keeps showing up. This document records those cases, so a scan can be
-# honest about them:
+# keeps showing up. This document records those cases, and the CVEs that do
+# apply, so a scan can be honest about both:
 #   - automatic `fixed` statements: every CVE id in the name of a patch the
 #     package applies (nixpkgs names backports CVE-YYYY-N.patch). They are
 #     derived from the derivation itself, so they appear and disappear with
 #     the patch;
-#   - hand-curated statements from vex/statements.nix (not_affected with a
-#     justification, or `fixed` behind a `when` guard).
+#   - hand-curated statements from vex/statements.nix: not_affected with a
+#     justification, `fixed` behind a `when` guard, or `affected` with an
+#     action_statement (the mitigation). An entry's `images` list limits it
+#     to those images. `affected` suppresses nothing: grype still reports
+#     the match.
 #
 # Products are package purls exactly as the SBOM spells them: pkg:nix/<pname>@<version>
 # (syft's Nix cataloger, and what `grype <image>` sees), plus pkg:generic/<name>@<version>

@@ -22,11 +22,18 @@ Node.js, glibc, and so on) using Nix. Two different kinds of findings:
   shared library, or the workflows (for example, a misconfiguration that ships a
   shell, runs as root, or leaks a credential). Report these here.
 - **A CVE in a packaged upstream component** — these flow in automatically. A
-  weekly job commits a `flake.lock` bump to `main` and rebuilds from that
-  commit, so upstream fixes land without manual work and every published image
-  is traceable to a commit that reproduces it (a build leg that fails holds
-  back only that image:tag's manifest lists, not the whole weekly refresh, and
-  the run goes red naming them). Scan any image yourself with
+  weekly job commits a `flake.lock` bump to the `bump/flake-lock` side branch,
+  builds the full matrix and the examples from it without publishing, and only
+  if both are green fast-forwards `main` to that exact commit and publishes
+  from it. Upstream fixes land without manual work and every published image
+  is traceable to a commit that reproduces it. A build that fails during
+  verification holds back the whole week's refresh: `main` and the images stay
+  on last week's lock. After landing, a publish leg that fails holds back only
+  that image:tag's manifest lists, and the run goes red naming them. A
+  watchdog retries failed runs and opens a `rebuild-failed` issue when a
+  rebuild stays red or an image goes stale. Known-affected CVEs and their
+  mitigations are published as `affected` statements in each image's OpenVEX
+  attestation. Scan any image yourself with
   `grype <image>`, or grype its attested CycloneDX SBOM with its OpenVEX
   applied, or read CI's attested scan result (see **Scanning varde images** in
   the README). Trivy, Docker Scout and Snyk cannot see Nix packages and report
