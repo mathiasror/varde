@@ -417,24 +417,126 @@ rec {
       fakeRootCommands = ''
         chown -R 1000:1000 ./app
       '';
-      config = {
-        User = "1000:1000";
-        WorkingDir = "/app";
-        Entrypoint = spec.entrypoint;
-        Env =
-          commonEnv ++ lib.optional (spec.fhs or false) "LD_LIBRARY_PATH=/lib:/lib64" ++ (spec.env or [ ]);
-        Labels = {
-          "org.opencontainers.image.title" = name;
-          "org.opencontainers.image.description" = description;
-          "org.opencontainers.image.source" = "https://github.com/mathiasror/varde";
-          "org.opencontainers.image.url" = "https://rorvik.xyz";
-          "org.opencontainers.image.licenses" = "Apache-2.0";
-          "org.opencontainers.image.base.name" = "scratch";
-        };
+      config = imageConfig { inherit name spec description; };
+    };
+
+  # The OCI image config of an image (also the base of its -debug variant's).
+  imageConfig =
+    {
+      name,
+      spec,
+      description,
+    }:
+    {
+      User = "1000:1000";
+      WorkingDir = "/app";
+      Entrypoint = spec.entrypoint;
+      Env =
+        commonEnv ++ lib.optional (spec.fhs or false) "LD_LIBRARY_PATH=/lib:/lib64" ++ (spec.env or [ ]);
+      Labels = {
+        "org.opencontainers.image.title" = name;
+        "org.opencontainers.image.description" = description;
+        "org.opencontainers.image.source" = "https://github.com/mathiasror/varde";
+        "org.opencontainers.image.url" = "https://rorvik.xyz";
+        "org.opencontainers.image.licenses" = "Apache-2.0";
+        "org.opencontainers.image.base.name" = "scratch";
+      };
+    }
+    // lib.optionalAttrs (spec ? cmd && spec.cmd != null) { Cmd = spec.cmd; }
+    // lib.optionalAttrs (spec ? stopSignal && spec.stopSignal != null) {
+      StopSignal = spec.stopSignal;
+    };
+
+  # --- -debug variants -------------------------------------------------------
+
+  # Every image also gets a `<tag>-debug` sibling (flake.nix entriesFor): the
+  # SAME image tarball, unchanged, as the base layers (dockerTools fromImage
+  # copies them byte for byte, so they keep their digests), plus a static
+  # busybox at /busybox (`sh` and the coreutils-style applets, distroless's
+  # :debug convention) appended to PATH. Same user (1000:1000), workdir,
+  # entrypoint, cmd, stop signal and labels. For troubleshooting only: it is
+  # exactly the shell the production images are guaranteed not to have.
+  #
+  # The busybox is the full defconfig build, linked statically against musl
+  # (nixpkgs' `useMusl`, as busybox-sandbox-shell does) from the glibc set:
+  # one self-contained binary per arch, libc-agnostic, shared by every
+  # image's -debug variant, and built with the cached glibc toolchain.
+  debugBusybox =
+    pkgs:
+    pkgs.busybox.override (
+      {
+        enableStatic = true;
       }
-      // lib.optionalAttrs (spec ? cmd && spec.cmd != null) { Cmd = spec.cmd; }
-      // lib.optionalAttrs (spec ? stopSignal && spec.stopSignal != null) {
-        StopSignal = spec.stopSignal;
+      //
+        lib.optionalAttrs
+          (pkgs.stdenv.hostPlatform.isGnu && lib.meta.availableOn pkgs.stdenv.hostPlatform pkgs.musl)
+          {
+            useMusl = true;
+          }
+    );
+
+  # A -debug variant on top of `base` (the production image tarball).
+  #
+  # The closure guard is NOT relaxed for it in general: the base layers come
+  # from the production image, whose own guard already ran without this
+  # exemption, and the one thing added here is guarded separately with an
+  # allow list of exactly this busybox derivation (full store path, like
+  # postgres's sandbox shell) — so anything else on the deny list that the
+  # busybox ever dragged in would still fail the build.
+  #
+  # Layout: busybox is its own store-path layer, and the customisation layer
+  # holds /busybox/<applet> symlinks to it (the applets busybox installs into
+  # bin/ and sbin/), so the debug image is the base plus two small layers.
+  # Not run through stripImage: that would rewrite the base layers, and they
+  # must stay byte-identical to production's.
+  buildDebugImage =
+    pkgs:
+    {
+      name,
+      tag,
+      description,
+      spec,
+      base,
+    }:
+    let
+      bb = debugBusybox pkgs;
+      guard = closureGuard pkgs {
+        name = "${name}-${tag}";
+        contents = [ bb ];
+        allow = [ "^${lib.escapeRegex "${bb}"}$" ];
+      };
+      config = imageConfig { inherit name spec description; };
+      # Append, so the image's own binaries keep precedence. An image without
+      # a PATH runs with the runtime's default one; keep that and add /busybox.
+      hasPath = lib.any (lib.hasPrefix "PATH=") config.Env;
+      env =
+        if hasPath then
+          map (e: if lib.hasPrefix "PATH=" e then "${e}:/busybox" else e) config.Env
+        else
+          config.Env ++ [ "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/busybox" ];
+    in
+    pkgs.dockerTools.buildLayeredImage {
+      inherit name tag;
+      fromImage = base;
+      # dockerTools counts the base's layers against maxLayers. Production
+      # images are built with the default 100, so this leaves room for the
+      # busybox layer plus the customisation layer on even a full base.
+      maxLayers = 103;
+      extraCommands = ''
+        # Interpolating the closure guard (${guard}) makes it an input.
+        mkdir busybox
+        for a in ${bb}/bin/* ${bb}/sbin/*; do
+          [ -e "$a" ] || continue
+          ln -sfn ${bb}/bin/busybox "busybox/''${a##*/}"
+        done
+        [ -x busybox/sh ] || { echo "debug image: busybox has no sh applet" >&2; exit 1; }
+      '';
+      config = config // {
+        Env = env;
+        Labels = config.Labels // {
+          "org.opencontainers.image.description" =
+            "${description} (-debug variant: adds busybox at /busybox for troubleshooting; never run it in production)";
+        };
       };
     };
 

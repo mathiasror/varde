@@ -11,7 +11,9 @@
 # Every entry must cite evidence. `when` gets the libc package set and must be
 # true for the statement to be emitted; leave it out for unconditional facts.
 # `images` (image names, e.g. [ "php" ]) limits an entry to those images, for
-# a package that is reachable in some images and not others. An `affected`
+# a package that is reachable in some images and not others. `notInDebug =
+# true` drops an entry from the -debug variants' documents, for a fact about
+# a package that the debug layer adds again in a different build. An `affected`
 # entry needs an `action` (OpenVEX action_statement) telling users what to do.
 # `pkg` is an attribute of that package set, or "libc" for glibc/musl.
 # Statuses/justifications: https://github.com/openvex/spec/blob/main/OPENVEX-SPEC.md
@@ -151,6 +153,10 @@ in
     status = "not_affected";
     justification = "vulnerable_code_not_present";
     impact = "busybox-sandbox-shell is enableMinimal (allnoconfig) + ash; the netstat and tar applets are not compiled in.";
+    # The -debug variants add a defconfig busybox, where both applets ARE
+    # compiled in, under the same purl (pkg:nix/busybox@<version>): a
+    # statement there would hide its real findings.
+    notInDebug = true;
   }
 
   # --- ada (node) ----------------------------------------------------------
