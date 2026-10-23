@@ -10,9 +10,11 @@ varde ok
 
 ## The contract in 20 seconds
 
-- The base is the PHP CLI plus `php-fpm` with nixpkgs' **default extension set**
-  (bcmath curl dom fileinfo gd intl mbstring opcache openssl pdo_mysql pdo_pgsql
-  pdo_sqlite sodium zip …) — no shell, no composer, no pecl.
+- The base is the PHP CLI plus `php-fpm` with nixpkgs' **default extension set
+  minus `ldap`** (bcmath curl dom fileinfo gd intl mbstring opcache openssl
+  pdo_mysql pdo_pgsql pdo_sqlite sodium zip …) — no shell, no composer, no
+  pecl. `mail()` fails cleanly (there is no sendmail): send over SMTP from the
+  app.
 - Non-root `1000:1000`, `WORKDIR /app`, `ENTRYPOINT ["/runtime/bin/php"]`,
   `CMD ["/app/index.php"]` — so dropping `index.php` in `/app` is all it takes.
 - Bare tags are musl (`:8.5`); opt into glibc with `:8.5-glibc`.

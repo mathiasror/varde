@@ -1,12 +1,15 @@
 # Hand-curated OpenVEX statements: scanner matches that are not real for a
-# varde image. lib/vex.nix also emits `fixed` statements automatically for
-# every CVE that a nixpkgs patch is named after (CVE-*.patch), so list here
-# only what that cannot see:
+# varde image, and known-affected CVEs with their mitigation. lib/vex.nix
+# also emits `fixed` statements automatically for every CVE that a nixpkgs
+# patch is named after (CVE-*.patch), so list here only what that cannot see:
 #   - wrong product or version-range noise, where nothing is patched;
 #   - a vulnerable component that varde does not ship (KDC, nscd, an applet);
 #   - fixes that arrive under an unchanged version string (glibc's 2.44-N
 #     branch level), guarded by `when` so the statement exists only for a
-#     build that really carries the fix.
+#     build that really carries the fix;
+#   - a CVE that does apply to an image (`affected`, with an `action`): it
+#     suppresses nothing (grype still reports it) but tells users what to do,
+#     e.g. CVE-2026-107778 in postgres below.
 #
 # Every entry must cite evidence. `when` gets the libc package set and must be
 # true for the statement to be emitted; leave it out for unconditional facts.
