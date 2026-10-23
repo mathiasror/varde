@@ -2,10 +2,13 @@
 
 Minimal, **distroless** container base images built with Nix. Each image carries
 only what an app needs to run — the language runtime (or, for compiled
-languages, just the libs a binary links against) and nothing else: **no shell,
-no package manager, no coreutils, no busybox** — and every image runs as an
-unprivileged user. Where there's a choice of C library, images default to
-**musl** (a smaller codebase and CVE history), with **glibc** one tag away.
+languages, just the libs a binary links against) and nothing else: **no
+package manager, no coreutils, and no shell in production images** (the one
+exception, a static `ash` in `varde-postgres` that `initdb` requires, is
+described [below](#libc-musl-by-default-glibc-on-request)) — and every image
+runs as an unprivileged user. Where there's a choice of C library, images
+default to **musl** (a smaller codebase and CVE history), with **glibc** one tag
+away.
 
 > A *varde* (Norwegian for a *cairn*) is a small stack of stones that marks a
 > trail. These are the smallest stacks you need to run an app, and nothing more.
@@ -66,6 +69,9 @@ too.
 Each is published to **GHCR** under `ghcr.io/mathiasror/<image>`, multi-arch
 (`amd64` + `arm64`).
 
+Tags ending in `-staging` (e.g. `varde-jre:21-staging`) are internal CI
+pipeline tags, overwritten on every publish run; do not use them.
+
 ### libc: musl by default, glibc on request
 
 Every runtime/service image is built for both C libraries. **The bare tag is
@@ -96,7 +102,7 @@ on musl), so its bare tags are the glibc build. `varde-static` carries no libc
 `varde-postgres` is the **one exception to "no shell"**: it ships a minimal
 static `ash` at `/bin/sh` (Nix's own busybox-sandbox-shell — a single binary,
 no other applets) because PostgreSQL's `initdb` bootstraps through libc
-`popen`/`system`, which hardcode `/bin/sh`. Every other image remains
+`popen`/`system`, which hardcode `/bin/sh`. Every other production image is
 shell-free.
 
 ### Every image guarantees
@@ -105,7 +111,7 @@ shell-free.
 | --- | --- |
 | User | `1000:1000` (`app`, non-root) |
 | Working directory | `/app` (owned by `1000:1000`) |
-| Shell / package manager | **none** |
+| Shell / package manager | **none** (except `varde-postgres`'s static `ash`, above) |
 | TLS | CA bundle at `/etc/ssl/certs/ca-certificates.crt` (`SSL_CERT_FILE` set): nixpkgs' Mozilla-derived `cacert` minus the roots varde distrusts (currently the eMudhra/Sectigo roots behind the October 2026 intermediate key compromise; a build check proves the compromised chains are rejected, see [`lib/distrust`](lib/distrust)). Node reads this bundle, and the JRE's `cacerts` is generated from it |
 | Timezones | tzdata at `/usr/share/zoneinfo` (`TZDIR` set) |
 | Writable paths | `/app`, `/tmp` (sticky) |
