@@ -878,13 +878,17 @@ jobs:
                   if hastag "$image" "${ver}-musl"; then d=musl; else d=glibc; fi
                   plan "${i}:${ver}" "$image" "${ver}-${d}"
                   # Pre-libc-split per-arch tags (jre:21-amd64, python:3.12-arm64)
-                  # are still pulled, so keep them on the bare tag's children
-                  # instead of leaving them frozen. Both legs or neither, like
-                  # the list itself; the children were signed and verified in
-                  # the build job, so these are plain manifest moves, unsigned
-                  # here. Only tags that already exist are moved (move_legacy):
-                  # this repairs old tags, it does not mint new ones.
-                  amd=$(dgst "$image" "${ver}-${d}" amd64); arm=$(dgst "$image" "${ver}-${d}" arm64)
+                  # are still pulled, so keep them updated instead of leaving
+                  # them frozen. They were glibc images before the split, so
+                  # they follow the -glibc children, NOT the bare tag (musl
+                  # where built): moving them to musl would silently switch
+                  # their users' libc. Both legs or neither, like a list; the
+                  # children were signed and verified in the build job, so
+                  # these are plain manifest moves, unsigned here. Only tags
+                  # that already exist are moved (move_legacy): this repairs
+                  # old tags, it does not mint new ones.
+                  hastag "$image" "${ver}-glibc" || continue
+                  amd=$(dgst "$image" "${ver}-glibc" amd64); arm=$(dgst "$image" "${ver}-glibc" arm64)
                   if [ -n "$amd" ] && [ -n "$arm" ]; then
                     printf '%s@%s %s:%s-amd64\n' "$i" "$amd" "$i" "$ver" >> "$legacyfile"
                     printf '%s@%s %s:%s-arm64\n' "$i" "$arm" "$i" "$ver" >> "$legacyfile"
@@ -1090,7 +1094,7 @@ jobs:
           }
           export -f move_one
           xargs -P 8 -n 2 bash -c 'set -euo pipefail; move_one "$@"' _ < "$MOVELIST"
-          # Legacy per-arch tags last, after their bare list has moved.
+          # Legacy per-arch tags last, after their -glibc list has moved.
           move_legacy(){
             if skopeo inspect --raw --creds "${ACTOR}:${TOKEN}" "docker://$2" >/dev/null 2>&1; then
               move_one "$1" "$2"

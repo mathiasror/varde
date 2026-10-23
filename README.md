@@ -65,7 +65,11 @@ musl is the default because a smaller libc means less to patch and a smaller
 attack surface. Reach for `-glibc` when something needs it — a wheel with only
 manylinux (glibc) binaries, a native addon built against glibc, or a prebuilt
 dependency that assumes glibc. Per-arch tags are libc-qualified, e.g.
-`:21-musl-arm64` or `:3.13-glibc-amd64`.
+`:21-musl-arm64` or `:3.13-glibc-amd64`. The older bare-version per-arch tags
+(`varde-jre`, `varde-python` and `varde-node` `:<ver>-amd64` / `:<ver>-arm64`)
+predate the libc split, when every image was glibc, so CI keeps them on the
+**glibc** build (`:<ver>-glibc-<arch>`), not on the bare tag's musl. Prefer
+the libc-qualified form so the libc is explicit.
 
 *`varde-jre:17` is **glibc-only** — Adoptium ships no aarch64 Alpine/musl JRE for
 JDK 17; `:21` and `:25` default to musl. `varde-mysql` is **glibc-only** — musl
@@ -390,7 +394,9 @@ data-driven from the flake:
    digest (all skipped on PRs).
 3. **manifest** — assembles multi-arch lists per libc tag, the bare-version and
    `:latest` / `:latest-glibc` aliases, and the `varde-go` / `varde-rust` alias
-   digests — from this run's verified per-arch digests, per image:tag pair. A
+   digests — from this run's verified per-arch digests, per image:tag pair —
+   then moves the pre-split `:<ver>-<arch>` tags that still exist onto the
+   `-glibc` children. A
    leg that failed or timed out holds back only the lists that need it (the
    job names them and goes red); every other pair is still refreshed.
 

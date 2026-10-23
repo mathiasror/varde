@@ -188,7 +188,10 @@ commands are in the README.
 
 Registry tags: `:<tag>-<libc>` (a multi-arch manifest list) and
 `:<tag>-<libc>-<arch>` per-arch; a bare `:<tag>` and `:latest` aliasing the
-default libc (musl if built, else glibc); `:latest-glibc`; and the `varde-go` /
+default libc (musl if built, else glibc); `:latest-glibc`; the pre-split
+`:<tag>-<arch>` per-arch tags of jre/python/node, kept (where they already
+exist) on the `-glibc` children because they were glibc before the split; and
+the `varde-go` /
 `varde-rust` alias images mirroring `varde-static` / `varde-glibc`. Each list
 is first pushed under a fixed `<tag>-staging` name (signed and verified there,
 then the real tag is moved onto that digest — see build.yml); those `-staging`
