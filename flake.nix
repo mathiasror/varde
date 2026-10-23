@@ -280,6 +280,71 @@
         else
           throw "image '${image}' needs `latest = \"<tag>\";` in images/${image}.nix (variants: ${lib.concatStringsSep ", " tags})"
       ) evaluated."x86_64-linux";
+
+      imageAliases = {
+        go = "static";
+        rust = "glibc";
+      };
+
+      # Every tag a full publish moves in GHCR, for rebuild-watchdog.yml's
+      # freshness check, so the watchdog follows the flake instead of keeping
+      # its own list. Mirrors build.yml: the build job's per-arch tags
+      # (<tag>-amd64/-arm64, one platform each), and the manifest job's lists
+      # (both platforms): one per variant; for libc-axis images also the bare
+      # version (default libc), :latest and, when a glibc variant of the latest
+      # version exists, :latest-glibc; and for each image alias every source
+      # tag plus :latest. If the manifest job's plan changes, change this too;
+      # the job warns when the two disagree.
+      # `nix eval --json .#publishedTags` -> [{image,tag,platforms}, ...]
+      publishedTags =
+        let
+          arches = [
+            "amd64"
+            "arm64"
+          ];
+          both = map (a: "linux/${a}") arches;
+          isLibcTag = t: lib.hasSuffix "-musl" t || lib.hasSuffix "-glibc" t;
+          stripLibc = t: lib.removeSuffix "-glibc" (lib.removeSuffix "-musl" t);
+          tagsOf = image: lib.attrNames evaluated."x86_64-linux".${image}.variants;
+          # Every multi-arch list has a -debug twin (build.yml plan()); there
+          # are no per-arch -debug tags.
+          withDebug = tags: tags ++ map (t: "${t}-debug") tags;
+          lists =
+            image:
+            let
+              tags = tagsOf image;
+              lv = latestTags.${image};
+            in
+            tags
+            ++ lib.optionals (lib.any isLibcTag tags) (
+              map stripLibc tags ++ [ "latest" ] ++ lib.optional (lib.elem "${lv}-glibc" tags) "latest-glibc"
+            );
+          forImage =
+            image: _:
+            map (tag: {
+              inherit image tag;
+              platforms = both;
+            }) (withDebug (lists image))
+            ++ lib.concatMap (
+              tag:
+              map (a: {
+                inherit image;
+                tag = "${tag}-${a}";
+                platforms = [ "linux/${a}" ];
+              }) arches
+            ) (tagsOf image);
+          forAlias =
+            alias: src:
+            map (tag: {
+              image = alias;
+              inherit tag;
+              platforms = both;
+            }) (withDebug (tagsOf src ++ [ "latest" ]));
+        in
+        lib.unique (
+          lib.concatLists (lib.mapAttrsToList forImage evaluated."x86_64-linux")
+          ++ lib.concatLists (lib.mapAttrsToList forAlias imageAliases)
+        );
     in
     {
       packages = forAllSystems (
@@ -297,6 +362,7 @@
       # `nix eval --json .#ciMatrix`     -> [{image,tag,attr,sbomName,libc,debugTag,debugAttr,debugSbomName}, ...]
       # `nix eval --json .#latestTags`   -> {jre="21"; python="3.14"; ...}  (version; CI resolves default libc)
       # `nix eval --json .#imageAliases` -> {go="static"; rust="glibc";}    (published as mirror digests)
+      # `nix eval --json .#publishedTags` -> [{image,tag,platforms}, ...]  (every tag a publish moves)
       #
       # One row per production variant. Its -debug sibling rides on the same
       # row (debugTag/debugAttr/debugSbomName) instead of getting a row of its
@@ -349,10 +415,6 @@
           ) (entriesFor system)
         )
       );
-      inherit latestTags;
-      imageAliases = {
-        go = "static";
-        rust = "glibc";
-      };
+      inherit latestTags imageAliases publishedTags;
     };
 }

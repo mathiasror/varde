@@ -71,7 +71,12 @@ declare -A BUILT
 build_base() { # $1=attr $2=name ; returns non-zero on failure
   [ -n "${BUILT[$2]:-}" ] && return 0
   echo "==> nix build .#$1  (base varde-$2)"
-  nix build -L ".#$1" || return 1
+  # One retry: a cache-cold base runs its dependencies' check phases, and a
+  # few of those are timing-flaky (see build.yml's "Build image" step).
+  nix build -L ".#$1" || {
+    echo "    nix build .#$1 failed; retrying once in case a dependency's test flaked"
+    nix build -L ".#$1"
+  } || return 1
   local ref
   ref=$(docker load -i result | sed -n 's/^Loaded image: //p' | head -n1) || return 1
   [ -n "$ref" ] || return 1

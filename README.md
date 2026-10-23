@@ -572,11 +572,25 @@ whose lock reproduces it.
 hours. It re-runs the failed jobs of the newest `bump-lock` run on `main` and
 of the newest publishing (push or dispatch) `build-image` run on `main`, up to
 3 attempts in total, since most red weeks are cache-cold timeouts or flaky
-dependency tests; cancelled runs are left alone. It also checks freshness for
-each image's default tag in `.#latestTags`: the linux/amd64 image must carry a
-verified vuln attestation from the last 10 days. If anything is still wrong,
-it opens an issue labelled `rebuild-failed`, and closes it once things are
-green again.
+dependency tests; cancelled runs are left alone, and so is a run in which an
+image build failed twice in one job (`build.yml` already retries it once, so
+that is a real breakage). It also checks freshness for every tag a publish
+moves (`.#publishedTags`: each variant, bare-version, `:latest` and alias
+list, and the per-arch tags), on both linux/amd64 and linux/arm64: each must
+carry a verified vuln attestation from the last 10 days. If anything is still
+wrong, it opens an issue labelled `rebuild-failed`, and closes it once things
+are green again.
+
+A bump that stays red triggers
+[`rebuild-fix.yml`](.github/workflows/rebuild-fix.yml): Claude Code diagnoses
+the failed run and proposes a fix PR. After reading the diff, you run
+[`verify.yml`](.github/workflows/verify.yml) on it (full build + e2e, no
+publish) and merge. Nothing agent-written runs with the publish credentials
+before a person has read it. It authenticates with a Claude subscription
+token: run `claude setup-token`, then
+`gh secret set CLAUDE_CODE_OAUTH_TOKEN`. Without that secret the fix step
+skips with a warning. Actions must also be allowed to create pull requests
+(Settings → Actions → General).
 
 Maintaining a fork (Cachix setup, first publish, publish checklist): see
 [Maintaining a fork](docs/design.md#maintaining-a-fork).
@@ -652,6 +666,8 @@ scripts/e2e.sh                  # build examples on local bases, smoke + size bu
 .github/workflows/build.yml     # data-driven matrix build -> grype -> GHCR
 .github/workflows/bump-lock.yml # weekly flake.lock bump -> verify on a side branch -> land on main -> dispatch build
 .github/workflows/rebuild-watchdog.yml # retry failed rebuilds, flag stale images, track an issue
+.github/workflows/rebuild-fix.yml # agent-proposed fix PR for a bump that stays red
+.github/workflows/verify.yml    # full build + e2e of a branch, no publish (dispatch after review)
 .github/workflows/e2e.yml       # build + smoke-test the examples
 .github/workflows/pages.yml     # deploy the landing page to GitHub Pages
 .github/canary/                 # known-CVE SBOM fixture that guards the grype scan
