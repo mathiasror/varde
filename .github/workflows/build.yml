@@ -299,10 +299,27 @@ jobs:
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
           pushFilter: '(\.tar\.gz$|-customisation-layer$|-sbom$)'
 
+      # One in-job retry. A cache-cold leg (a lock bump, or any change to a
+      # shared musl input) runs the check phases of everything it rebuilds,
+      # and a few of those are timing-flaky: python3.14-filelock (2026-10-19,
+      # failed in one leg while the same drv passed in two siblings),
+      # python3.14-pytest-xdist (run 39408517746). Everything that finished is
+      # already in the store and in Cachix, so the second attempt rebuilds
+      # only the failed derivation and what depends on it. A real breakage
+      # (sqlite, jemalloc on musl) fails twice and the leg goes red as before.
       - name: Build image
         env:
           ATTR: ${{ matrix.attr }}
-        run: nix build -L ".#${ATTR}"
+        run: |
+          nix build -L ".#${ATTR}" || {
+            echo "::warning::nix build .#${ATTR} failed; retrying once in case a dependency's test flaked"
+            # rebuild-watchdog.yml greps this exact annotation to skip
+            # pointless re-runs; keep the wording in sync.
+            nix build -L ".#${ATTR}" || {
+              echo "::error::nix build .#${ATTR} failed twice in a row; not a flake"
+              exit 1
+            }
+          }
 
       # syft reads the built tarball (see buildSbomApp in lib/default.nix), so
       # this needs nothing beyond `result` — no store closure to realise.
@@ -916,6 +933,20 @@ jobs:
           [ -s "$planfile" ] || { [ -s "$skipfile" ] && fail_skipped; echo "empty manifest plan" >&2; exit 1; }
           dups=$(awk '{print $1}' "$planfile" | sort | uniq -d)
           [ -z "$dups" ] || { echo "conflicting manifest plans for: $dups" >&2; exit 1; }
+
+          # rebuild-watchdog.yml checks freshness against the flake's
+          # .#publishedTags, a Nix mirror of this plan. Warn (never fail a
+          # publish over it) when they disagree, so the watchdog's list
+          # cannot drift silently. Planned + held-back = what a full publish
+          # moves.
+          have=$( { awk '{print $1}' "$planfile"; cat "$skipfile"; } | sort -u)
+          if ! want=$(nix eval --json .#publishedTags \
+                 | jq -r --arg p "${reg}/${owner}/varde-" '.[] | select(.platforms | length > 1) | "\($p)\(.image):\(.tag)"' \
+                 | sort -u); then
+            echo "::warning::could not evaluate .#publishedTags (the watchdog's tag list)"
+          elif [ "$want" != "$have" ]; then
+            echo "::warning::.#publishedTags (the watchdog's tag list) differs from this manifest plan; update it in flake.nix (< flake only, > plan only): $(diff <(echo "$want") <(echo "$have") | grep '^[<>]' | tr '\n' ' ')"
+          fi
 
           # Same discipline as the per-arch tags: the real tag moves only after
           # the index it will point at is signed AND verified. imagetools
