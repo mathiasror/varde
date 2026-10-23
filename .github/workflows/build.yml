@@ -19,8 +19,9 @@ name: build-image
 # everything, so publishes are never scoped. Publishing is main-only: push is
 # filtered to main and the setup job refuses a workflow_dispatch from any other
 # ref, so the signing identity is always build.yml@refs/heads/main. The weekly
-# CVE-refresh rebuild lives in bump-lock.yml, which commits a flake.lock bump
-# to main and then dispatches this workflow — so every published image is built
+# CVE-refresh rebuild lives in bump-lock.yml, which verifies a flake.lock bump
+# on a side branch (calling this workflow with verify_only), fast-forwards main
+# to it, and then dispatches this workflow — so every published image is built
 # from a lock that exists in a commit, and the SLSA provenance sha reproduces
 # the build. A shared Cachix cache holds the from-source musl builds so later
 # runs (and the e2e workflow, which workflow_run-chains off every successful
@@ -731,7 +732,7 @@ jobs:
       # 7-day retention (one weekly cadence) is what keeps that re-run viable:
       # the manifest job re-plans from the SURVIVING legs' digest files, so
       # once they expire every list is held back and only a fresh dispatch
-      # from main recovers (see the README's publish checklist).
+      # from main recovers (see the publish checklist in docs/design.md).
       - name: Record the published digest for the manifest job
         if: needs.setup.outputs.publish == 'true'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

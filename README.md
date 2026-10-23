@@ -2,15 +2,34 @@
 
 Minimal, **distroless** container base images built with Nix. Each image carries
 only what an app needs to run — the language runtime (or, for compiled
-languages, just the libs a binary links against) and nothing else: **no shell,
-no package manager, no coreutils, no busybox** — and every image runs as an
-unprivileged user. Where there's a choice of C library, images default to
-**musl** (a smaller codebase and CVE history), with **glibc** one tag away.
+languages, just the libs a binary links against) and nothing else: **no
+package manager, no coreutils, and no shell in production images** (the one
+exception, a static `ash` in `varde-postgres` that `initdb` requires, is
+described [below](#libc-musl-by-default-glibc-on-request)) — and every image
+runs as an unprivileged user. Where there's a choice of C library, images
+default to **musl** (a smaller codebase and CVE history), with **glibc** one tag
+away.
 
 > A *varde* (Norwegian for a *cairn*) is a small stack of stones that marks a
 > trail. These are the smallest stacks you need to run an app, and nothing more.
 
 ## Images
+
+### Quick start
+
+```bash
+docker pull ghcr.io/mathiasror/varde-python:3.13
+docker run --rm ghcr.io/mathiasror/varde-python:3.13 -c 'print("varde ok")'
+# Verify the signature against the one identity that publishes:
+cosign verify \
+  --certificate-identity https://github.com/mathiasror/varde/.github/workflows/build.yml@refs/heads/main \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  ghcr.io/mathiasror/varde-python:3.13
+```
+
+To build on one, see [Using the images](#using-the-images); to verify SBOM,
+VEX and provenance, see
+[Supply chain](#supply-chain-signatures-sbom--provenance).
 
 **Language runtimes**
 
@@ -42,12 +61,16 @@ unprivileged user. Where there's a choice of C library, images default to
 
 `varde-go` and `varde-rust` are published as **aliases** for discoverability:
 `varde-go` → `varde-static`, `varde-rust` → `varde-glibc` (the same digests).
-Each alias carries copies of its source's per-arch signature, SBOM and
-provenance attestations (the same Rekor entries), so the verification recipe
-below works against the alias name too.
+Each alias carries copies of its source's per-arch signature and all four
+attestations (SBOM, OpenVEX, vulnerability scan, SLSA provenance; the same
+Rekor entries), so the verification recipe below works against the alias name
+too.
 
 Each is published to **GHCR** under `ghcr.io/mathiasror/<image>`, multi-arch
 (`amd64` + `arm64`).
+
+Tags ending in `-staging` (e.g. `varde-jre:21-staging`) are internal CI
+pipeline tags, overwritten on every publish run; do not use them.
 
 ### libc: musl by default, glibc on request
 
@@ -80,7 +103,7 @@ on musl), so its bare tags are the glibc build. `varde-static` carries no libc
 `varde-postgres` is the **one exception to "no shell"**: it ships a minimal
 static `ash` at `/bin/sh` (Nix's own busybox-sandbox-shell — a single binary,
 no other applets) because PostgreSQL's `initdb` bootstraps through libc
-`popen`/`system`, which hardcode `/bin/sh`. Every other image remains
+`popen`/`system`, which hardcode `/bin/sh`. Every other production image is
 shell-free.
 
 ### Every image guarantees
@@ -89,7 +112,7 @@ shell-free.
 | --- | --- |
 | User | `1000:1000` (`app`, non-root) |
 | Working directory | `/app` (owned by `1000:1000`) |
-| Shell / package manager | **none** |
+| Shell / package manager | **none** (except `varde-postgres`'s static `ash`, above) |
 | TLS | CA bundle at `/etc/ssl/certs/ca-certificates.crt` (`SSL_CERT_FILE` set): nixpkgs' Mozilla-derived `cacert` minus the roots varde distrusts (currently the eMudhra/Sectigo roots behind the October 2026 intermediate key compromise; a build check proves the compromised chains are rejected, see [`lib/distrust`](lib/distrust)). Node reads this bundle, and the JRE's `cacerts` is generated from it |
 | Timezones | tzdata at `/usr/share/zoneinfo` (`TZDIR` set) |
 | Writable paths | `/app`, `/tmp` (sticky) |
@@ -142,15 +165,75 @@ COPY app /app/app
 ```
 
 Pin to a digest (`...@sha256:…`) in production. Pick an arch explicitly with a
-per-arch tag (`:21-musl-arm64`) if you ever need to.
+per-arch tag (`:21-musl-arm64`) if you ever need to. Tags are rebuilt weekly
+against the latest nixpkgs (see [CI](#ci)), so a tag picks up CVE fixes but a
+pinned digest never does: let Renovate or Dependabot bump the digest.
+
+### Without a shell
+
+- **Health checks**: use the exec form with a binary the image ships, e.g.
+  `HEALTHCHECK CMD ["/runtime/bin/pg_isready", "-U", "postgres"]` or
+  `["/runtime/bin/mysqladmin", "-u", "root", "ping"]` (the probes the
+  [postgres](examples/postgres/simple/README.md) and
+  [mysql](examples/mysql/simple/README.md) examples run with `docker exec`).
+  There is no `curl`: give an app an HTTP endpoint for the orchestrator's
+  probe (the [express example](examples/node/express/)'s `/healthz`), or probe
+  with the runtime itself, e.g.
+  `["/runtime/bin/python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz')"]`.
+  Shell-form `HEALTHCHECK CMD …`, `RUN`, and `docker exec … sh` fail.
+- **Debugging**: attach tools from outside instead of adding them to the
+  image: `docker debug <container>` (Docker Desktop), or
+  `kubectl debug -it <pod> --image=busybox --target=<container>`, which shares
+  the target's process namespace (its filesystem is under `/proc/1/root`).
+- **Kubernetes**: `USER` is numeric (`1000:1000`), so `runAsNonRoot: true`
+  works without setting `runAsUser`.
+
+### Size budgets
+
+[`scripts/e2e.sh`](scripts/e2e.sh) fails CI if an example image (base plus the
+example app, uncompressed, as `docker image inspect` reports it) grows past its
+budget. These are upper limits, not measured sizes:
+
+| Example | Base | Budget |
+| --- | --- | --- |
+| `go/simple` | `varde-static` | 10 MB |
+| `memcached/simple` | `varde-memcached` | 15 MB |
+| `nginx/static-site` | `varde-nginx` | 30 MB |
+| `redis/simple` | `varde-redis` | 35 MB |
+| `rust/simple` | `varde-glibc` | 55 MB |
+| `rabbitmq/simple` | `varde-rabbitmq` | 105 MB |
+| `postgres/simple` | `varde-postgres:18` | 115 MB |
+| `python/simple`, `requirements-venv`, `uv` | `varde-python:3.13` | 185–190 MB |
+| `node/simple`, `express` | `varde-node:24` | 215–220 MB |
+| `php/simple` | `varde-php:8.5` | 230 MB |
+| `jre/spring-boot-gradle` | `varde-jre:21` | 320 MB |
+| `mysql/simple` | `varde-mysql:8.4` (glibc) | 385 MB |
+
+All bases are the musl build unless noted.
+
+### Not supported
+
+- **Architectures** other than `amd64` and `arm64`.
+- **musl** for `varde-jre:17` and `varde-mysql` (glibc-only, see above).
+- **Shell or `-dev` variants** of any production image; postgres's static
+  `/bin/sh` is the only shell shipped.
+- **Package managers at runtime**: no `npm` in node, no `pip` (or `ensurepip`)
+  in python, no `composer`, `pear` or `pecl` in php. Install dependencies in a
+  builder stage and `COPY` them in (see the examples).
+- **PHP** `ldap` extension (dropped on both libcs) and `mail()` (there is no
+  sendmail; it fails cleanly, so send over SMTP from the app).
+- **End-of-life runtimes**, e.g. Node.js 20.
+- **Trivy, Docker Scout and Snyk** as scanners: they cannot see Nix packages
+  (see [Scanning varde images](#scanning-varde-images)).
 
 ## Building
 
 Images are Linux-only and built on native runners. The repo builds **on macOS
 hosts too**, but only through a Linux builder — Nix cannot produce a Linux image
-from Darwin directly (use the nix-darwin
-[`linux-builder`](https://nixos.org/manual/nixpkgs/stable/#sec-darwin-builder), or
-just let CI build them). On a Linux host:
+from Darwin directly. Use nixpkgs'
+[`darwin.linux-builder`](https://nixos.org/manual/nixpkgs/stable/#sec-darwin-builder)
+(or nix-darwin's `nix.linux-builder`), or just let CI build them. On a Linux
+host:
 
 ```bash
 nix build .#image-jre-21-musl       # -> ./result  (a Docker-format image tarball)
@@ -158,6 +241,14 @@ nix build .#image-python-3_12-glibc # note: dots -> underscores, libc is part of
 docker load < result
 # or push to your own namespace without a daemon:
 skopeo copy docker-archive:result docker://ghcr.io/YOUR_USER/varde-jre:21-musl-amd64
+```
+
+The flake only defines packages for `x86_64-linux` and `aarch64-linux`, so on
+macOS the short `.#image-…` form does not exist; name the Linux system
+explicitly and the build goes to the Linux builder:
+
+```bash
+nix build .#packages.aarch64-linux.image-jre-21-musl
 ```
 
 List everything that exists: `nix eval --json .#ciMatrix` (each entry carries its
@@ -217,12 +308,15 @@ SBOM is the same syft inventory plus hand-authored components that carry the
 exact identity NVD files CVEs under (`gnu:glibc`, `musl-libc:musl`,
 `oracle:openjdk`, `python_software_foundation:cpython`, …): the Nix cataloger
 guesses `vendor = product = pname`, and a wrong vendor matches nothing,
-silently. The VEX is explained in the next section.
+silently. The VEX is explained under
+[The OpenVEX attestation](#the-openvex-attestation-fixed-not-affected-and-affected-cves).
 
 The attestations live on the **per-arch digests** (the things actually built),
 not on the multi-arch tag, so resolve a platform digest first. Images are
 reproducible, so a digest that did not change between weekly runs collects
-one attestation of each type per run; the `jq -s … max_by` keeps the newest:
+one attestation of each type per run; the `jq -s … max_by` keeps the newest.
+The variables set here (`IMG`, `d`, `ID`, `ISSUER`) are reused by every
+command further down:
 
 ```bash
 IMG=ghcr.io/mathiasror/varde-postgres
@@ -240,8 +334,9 @@ cosign verify-attestation --type openvex \
 grype --vex vex.openvex.json sbom:sbom.cdx.json
 ```
 
-Or generate the SBOM from the flake on Linux (fetches the image tarball from
-the cache, or builds it, and reads it):
+Or generate the SBOM from the flake on Linux. Image tarballs are not in the
+Cachix cache, so the app assembles the tarball locally from the cached store
+paths (seconds when the cache is warm) and reads it:
 
 ```bash
 nix run .#sbom-jre-21-musl -- sbom.cdx.json
@@ -300,14 +395,15 @@ Dependency-Track imports CycloneDX VEX, not OpenVEX, so the varde OpenVEX
 statements are not applied there; triage those findings against
 `vex.openvex.json` (or `vex/statements.nix`) by hand.
 
-### False positives and the OpenVEX attestation
+### The OpenVEX attestation: fixed, not-affected and affected CVEs
 
 grype compares upstream versions, so a CVE that nixpkgs fixed with a patch,
 without bumping the version, still shows up, and so do CVEs filed against a
 different product or a component that varde does not ship. Each image carries
-an **OpenVEX attestation** that records those cases. It holds a `fixed`
-statement for every CVE a nixpkgs patch in the image is named after, plus the
-hand-reviewed `not_affected` and `fixed` statements in
+an **OpenVEX attestation** that records those cases, and also the CVEs that
+*do* apply, with what to do about them. It holds a `fixed` statement for every
+CVE a nixpkgs patch in the image is named after, plus the hand-reviewed
+`not_affected`, `fixed` and `affected` statements in
 [`vex/statements.nix`](vex/statements.nix), each with its evidence. It is
 generated from the same commit as the image ([`lib/vex.nix`](lib/vex.nix)),
 and CI's scan applies it. To apply it yourself, extract it as in
@@ -317,11 +413,29 @@ and CI's scan applies it. To apply it yourself, extract it as in
 grype --vex vex.openvex.json sbom:sbom.cdx.json   # or: grype --vex vex.openvex.json "$IMG@$d"
 ```
 
-grype moves VEX-covered matches to `ignoredMatches` (see `-o json`) rather than
-deleting them, so you can always audit what was suppressed and why. From a
-checkout, `nix eval --json .#vex.x86_64-linux.sbom-postgres-17-glibc` prints the same
-document. A statement is varde's claim, not upstream's, so review
-`vex/statements.nix` if your policy requires it.
+grype moves `not_affected` and `fixed` matches to `ignoredMatches` (see
+`-o json`) rather than deleting them, so you can always audit what was
+suppressed and why.
+
+A statement can be scoped to some images (`images` in `vex/statements.nix`),
+because the same library can be reachable in one image and dead code in
+another. CVE-2026-107778 (krb5 `krb5_rd_cred`) is the example: it is
+reachable only through the GSS-API acceptor, so it is `not_affected` in
+`varde-php` and `varde-mysql`, which use krb5 only as an initiator, and
+`affected` in `varde-postgres`, which accepts GSSAPI on any TCP connection
+once a keytab is provided (the image ships none). An `affected` statement
+carries an `action_statement` with the mitigation. It suppresses nothing:
+grype still reports the match. List an image's affected CVEs and their
+actions:
+
+```bash
+jq -r '.statements[] | select(.status == "affected") | "\(.vulnerability.name) \(.products[0]["@id"]): \(.action_statement)"' vex.openvex.json
+```
+
+From a checkout, `nix eval --json .#vex.x86_64-linux.sbom-postgres-17-glibc`
+prints the same document for any `sbomName` in `.#ciMatrix`. A statement is
+varde's claim, not upstream's, so review `vex/statements.nix` if your policy
+requires it.
 
 > SARIF upload to the GitHub **Security** tab is wired up but non-fatal — scan
 > findings land under **Security → Code scanning** per image/arch. (On a private
@@ -344,41 +458,29 @@ attached and verified, so a tag never points at an unsigned image. The
 copied into their own repo (and re-verified there) before their lists are
 signed and tagged, so every command below works with the alias name as well.
 
-The one signing identity is `build.yml` **on `main`** — publishing is refused
+The one signing identity is `build.yml` **on `main`**
+(`https://github.com/mathiasror/varde/.github/workflows/build.yml@refs/heads/main`,
+issuer `https://token.actions.githubusercontent.com`) — publishing is refused
 from any other ref — so verify against that exact identity rather than a
-repo-wide pattern (which would also accept other workflows and branches):
+repo-wide pattern (which would also accept other workflows and branches).
+With `IMG`, `d`, `ID` and `ISSUER` set as in
+[the CI-equivalent scan](#the-ci-equivalent-scan-attested-sbom--vex):
 
 ```bash
-# Verify a signature (the identity is this repo's build.yml workflow on main):
-cosign verify \
-  --certificate-identity https://github.com/mathiasror/varde/.github/workflows/build.yml@refs/heads/main \
-  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-  ghcr.io/mathiasror/varde-jre:21
+# Verify the signature on the multi-arch tag:
+cosign verify --certificate-identity "$ID" --certificate-oidc-issuer "$ISSUER" "$IMG:17"
 
-# Provenance, SBOM, VEX and vuln-scan attestations live on the per-arch
-# digests (the things actually built) — resolve a platform digest first:
-d=$(crane digest ghcr.io/mathiasror/varde-jre:21 --platform linux/amd64)
-
-# Verify SLSA build provenance (same exact identity; --bundle-from-oci reads
+# Verify SLSA build provenance on the per-arch digest (--bundle-from-oci reads
 # the attestation attached to the image in GHCR, the copy CI gates on, rather
 # than the GitHub attestations API):
-gh attestation verify "oci://ghcr.io/mathiasror/varde-jre@${d}" \
-  --repo mathiasror/varde \
-  --cert-identity https://github.com/mathiasror/varde/.github/workflows/build.yml@refs/heads/main \
-  --bundle-from-oci
-
-# Verify the CycloneDX SBOM attestation and extract the SBOM (a digest that
-# survived several weekly runs carries one per run; keep the newest):
-cosign verify-attestation --type cyclonedx \
-  --certificate-identity https://github.com/mathiasror/varde/.github/workflows/build.yml@refs/heads/main \
-  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-  "ghcr.io/mathiasror/varde-jre@${d}" \
-  | jq -s '[.[].payload | @base64d | fromjson | .predicate] | max_by(.metadata.timestamp)' > sbom.cdx.json
+gh attestation verify "oci://$IMG@$d" --repo mathiasror/varde --cert-identity "$ID" --bundle-from-oci
 ```
 
-The same `cosign verify-attestation` with `--type openvex` or `--type vuln`
-verifies the other two; [Scanning varde images](#scanning-varde-images) shows
-how to extract and use them.
+The SBOM, OpenVEX and vulnerability-scan attestations are verified and
+extracted by the `cosign verify-attestation` commands in
+[the CI-equivalent scan](#the-ci-equivalent-scan-attested-sbom--vex) and
+[CI's own result](#cis-own-result-the-vulnerability-scan-attestation): each
+fails unless the attestation is signed by that identity.
 
 ## CI
 
@@ -386,7 +488,10 @@ how to extract and use them.
 data-driven from the flake:
 
 1. **setup** — reads `.#ciMatrix`, `.#latestTags`, and `.#imageAliases`, crosses
-   every image/variant (including libc) with `amd64` + `arm64`.
+   every image/variant (including libc) with `amd64` + `arm64`. A PR builds
+   only the images its diff touches (a shared input such as `lib/`,
+   `flake.nix`, `flake.lock` or `build.yml` falls back to the full matrix);
+   push and dispatch always build everything.
 2. **build** — native runners (`ubuntu-latest` / `ubuntu-24.04-arm`): build the
    image, generate the SBOM, grype-scan it (behind a known-CVE canary),
    Trivy-scan the image filesystem for secrets, smoke-test it, push it to GHCR by digest,
@@ -405,55 +510,50 @@ Publishing happens from `main` only: `push` is filtered to `main` and a
 
 [`.github/workflows/e2e.yml`](.github/workflows/e2e.yml) builds every example on
 top of a locally-built base, smoke-tests that the app runs, and asserts an
-image-size budget ([`scripts/e2e.sh`](scripts/e2e.sh)) — on PRs that touch an
-input, and on `main` after every successful `build-image` run (each weekly
-bump, and every merge that rebuilds the images — an examples-only merge is
-covered by its PR-time run), warm from the Cachix cache that build just
-populated.
+image-size budget ([`scripts/e2e.sh`](scripts/e2e.sh)): on PRs that touch an
+input; on `main` after every successful *push* `build-image` run (a merge that
+rebuilds the images; an examples-only merge is covered by its PR-time run),
+warm from the Cachix cache that build just populated; and inside the weekly
+bump, before it lands (below). The weekly publish itself does not chain into
+e2e: it is dispatched with `GITHUB_TOKEN`, and GitHub raises no `workflow_run`
+event for a run started that way.
 
 Both `build` and `e2e` push/pull a shared **Cachix** cache so the from-source
 musl variants are compiled once and reused across jobs, later runs, and the e2e
 workflow (the first run is slow; subsequent ones are downloads).
 
 Auth uses the built-in `GITHUB_TOKEN`. A weekly job
-([`bump-lock.yml`](.github/workflows/bump-lock.yml)) bumps `flake.lock` to the
-latest nixpkgs, commits the bump to `main` (a GitHub-signed bot commit), and
-dispatches the build from that commit — so published images pick up CVE fixes
-*and* every published image corresponds to a commit of this repo whose lock
-reproduces it.
+([`bump-lock.yml`](.github/workflows/bump-lock.yml)) validates a nixpkgs bump
+before it lands:
 
-If a weekly rebuild fails, [`rebuild-watchdog.yml`](.github/workflows/rebuild-watchdog.yml)
-(every 3 hours) re-runs the failed jobs up to twice, since most red weeks are
-cache-cold timeouts or flaky dependency tests. It also checks that every
-published image carries a vuln attestation from the last 10 days. If either is
-still wrong, it opens an issue labelled `rebuild-failed`, and it closes that
-issue once things are green again.
+1. **bump** — `nix flake update nixpkgs`, then commit the new lock to the
+   `bump/flake-lock` side branch (main's head plus the lock; a GitHub-signed
+   commit).
+2. **verify** — run `build.yml` with `verify_only` (the full matrix: build,
+   SBOM, scans, smoke tests; no sign, push or tag) and `e2e.yml` on that
+   commit.
+3. **land** — only if both are green, fast-forward `main` to that exact commit
+   and dispatch the publishing `build.yml` run.
 
-> **Cache setup, one-time:** create a free open-source cache named `varde` at
-> [cachix.org](https://cachix.org) (keep it **public** so fork PRs and end users
-> can read it), then add its write token as the repo secret `CACHIX_AUTH_TOKEN`
-> (Settings → Secrets and variables → Actions). Reads are anonymous on a public
-> cache — the token is only needed to *push*; without it builds still work and
-> still pull the cache, they just can't refill it.
+A nixpkgs that breaks a build therefore leaves `main` and the published images
+on last week's lock, with a red bump run to look at. (An unchanged lock skips
+verify and dispatches the weekly rebuild directly, for a fresh scan and
+attestations.) Published images pick up
+CVE fixes, *and* every published image corresponds to a commit of this repo
+whose lock reproduces it.
 
-> **First publish, one-time step** *(done for `ghcr.io/mathiasror` — this
-> applies if you fork and publish your own)*: packages pushed by Actions are created
-> **private** by default — even from a public repo — so anonymous `docker pull`
-> would return 401 until you flip them. After the first successful build, set
-> each `varde-*` package to **Public** once (GHCR → the package → *Package
-> settings* → *Change visibility*) and connect it to this repository. Only then
-> does the "just `docker pull`, no token" promise hold.
+[`rebuild-watchdog.yml`](.github/workflows/rebuild-watchdog.yml) runs every 3
+hours. It re-runs the failed jobs of the newest `bump-lock` run on `main` and
+of the newest publishing (push or dispatch) `build-image` run on `main`, up to
+3 attempts in total, since most red weeks are cache-cold timeouts or flaky
+dependency tests; cancelled runs are left alone. It also checks freshness for
+each image's default tag in `.#latestTags`: the linux/amd64 image must carry a
+verified vuln attestation from the last 10 days. If anything is still wrong,
+it opens an issue labelled `rebuild-failed`, and closes it once things are
+green again.
 
-> **Publish checklist:** after a run on `main`,
-> - a red run's **manifest** job lists the tags whose manifest lists were *not*
->   refreshed (a build leg failed or timed out); per-arch tags of the legs that
->   succeeded are always current and signed. Re-run the failed legs, or fix and
->   dispatch again from `main`; re-running only works within 7 days of the
->   original run (the per-leg digest artifacts the manifest job stitches from
->   expire then) — after that, dispatch a fresh build from `main`;
-> - confirm an anonymous `docker pull ghcr.io/mathiasror/varde-jre:latest` (any
->   bare tag) resolves;
-> - first publish only: flip each `varde-*` package to **Public** (previous note).
+Maintaining a fork (Cachix setup, first publish, publish checklist): see
+[Maintaining a fork](docs/design.md#maintaining-a-fork).
 
 ## Adding a new image
 
@@ -486,6 +586,7 @@ version with the libc axis via `vardeLib.mkVariants`:
             (vardeLib.sbomComponent { vendor = "…"; product = "…"; version = p.<pkg>.version; })
           ];
           # stopSignal = "SIGQUIT";    # optional: a daemon whose graceful shutdown isn't SIGTERM
+          # sbomStripCpes = [ … ];     # optional: { foundBy?; name; } rules that drop mis-matching CPEs (see images/php.nix)
           # closureAllow = [ … ];      # optional: EREs on full store paths exempted from the closure guard
           # strip = false;             # optional: keep ELF symbol tables (stripped at image assembly by default)
         };
@@ -523,7 +624,7 @@ images/<name>.nix               # one module per image (+ images/nginx.conf)
 examples/<image>/<variant>/     # buildable "drop your app in" examples
 scripts/e2e.sh                  # build examples on local bases, smoke + size budgets
 .github/workflows/build.yml     # data-driven matrix build -> grype -> GHCR
-.github/workflows/bump-lock.yml # weekly flake.lock bump -> commit to main -> dispatch build
+.github/workflows/bump-lock.yml # weekly flake.lock bump -> verify on a side branch -> land on main -> dispatch build
 .github/workflows/rebuild-watchdog.yml # retry failed rebuilds, flag stale images, track an issue
 .github/workflows/e2e.yml       # build + smoke-test the examples
 .github/workflows/pages.yml     # deploy the landing page to GitHub Pages

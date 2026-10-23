@@ -303,6 +303,15 @@ button { font: inherit; color: inherit; cursor: pointer; }
   background: var(--grad);
   box-shadow: 0 0 10px rgba(120,150,255,0.6);
 }
+.trust li[title] { cursor: help; }
+.trust__note {
+  margin-top: .7rem;
+  font-family: var(--mono);
+  font-size: .72rem;
+  letter-spacing: .02em;
+  color: var(--muted);
+  opacity: .8;
+}
 
 /* =========================================================================
    BUTTONS

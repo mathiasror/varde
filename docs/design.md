@@ -18,14 +18,11 @@ library, images default to musl (smaller, fewer CVEs) with glibc opt-in.
 
 ## Image contract
 
-| Property | Value |
-| --- | --- |
-| User | `1000:1000` (`app`, non-root) |
-| Working directory | `/app` (owned by `1000:1000`) |
-| Shell / package manager | none — sole exception: postgres ships a minimal static `/bin/sh` because `initdb` bootstraps through libc `popen`/`system` |
-| TLS | CA bundle at `/etc/ssl/certs/ca-certificates.crt` |
-| Timezones | tzdata at `/usr/share/zoneinfo` |
-| Writable paths | `/app`, `/tmp` (sticky) |
+The contract (user `1000:1000`, `/app`, the CA bundle and its distrusted
+roots, tzdata, writable paths, scanning) is the table under
+[Every image guarantees](../README.md#every-image-guarantees) in the README.
+The one exception to its shell row: postgres ships a minimal static `/bin/sh`
+because `initdb` bootstraps through libc `popen`/`system`.
 
 The no-shell/no-package-manager row is enforced, not just intended: a
 build-time closure check (`lib/default.nix`) fails any image whose contents
@@ -75,9 +72,12 @@ The build is data-driven so that images are described, not wired up by hand.
   `{ description; latest?; variants = vardeLib.mkVariants pkgs { versions = …; }; }`
   where each version's `spec` is `libcPkgs: { contents ? [], entrypoint, cmd ? null,
   env ? [], fhs ? false, stopSignal ? null, sbomExtraComponents ? [ ],
-  closureAllow ? [ ], strip ? true }` — `libc` is set by `mkVariants` (or the
-  base specs), not by the module; `sbomExtraComponents` carries the runtime's
-  NVD CPE identity (see below), `stopSignal` a daemon's non-SIGTERM
+  sbomStripCpes ? [ ], closureAllow ? [ ], strip ? true }` — `libc` is set by
+  `mkVariants` (or the base specs), not by the module; `sbomExtraComponents`
+  carries the runtime's NVD CPE identity (see below), `sbomStripCpes` rules
+  (`{ foundBy ? …; name = <regex>; }`) that drop the CPEs of syft components
+  whose CPE names a different NVD product (php's bundled extensions; the code
+  stays covered by `php:php`), `stopSignal` a daemon's non-SIGTERM
   graceful-shutdown signal (postgres, nginx), `closureAllow` a closure-guard
   exemption, and `strip = false` opts a variant out of stripping ELF symbol
   tables (.symtab/.strtab) from its layers at image-assembly time
@@ -149,7 +149,14 @@ shipped. Each image therefore carries an OpenVEX document
 ([`lib/vex.nix`](../lib/vex.nix)): a `fixed` statement for every CVE a nixpkgs
 patch in the image is named after (derived from the derivation, so it tracks
 the patch), plus reviewed statements with evidence in
-[`vex/statements.nix`](../vex/statements.nix). CI scans with `grype --vex`,
+[`vex/statements.nix`](../vex/statements.nix). A reviewed statement can be
+limited to some images (`images = [ … ]`), because the same package purl can
+be reachable in one image and dead code in another: CVE-2026-107778 (krb5
+`krb5_rd_cred`, reached only through the GSS-API acceptor) is `not_affected`
+in php and mysql and `affected` in postgres, which accepts GSSAPI once a
+keytab is provided. An `affected` statement must carry an `action`, emitted as
+OpenVEX `action_statement`, with the mitigation; it suppresses nothing, and
+grype still reports the match. CI scans with `grype --vex`,
 logs what was suppressed, and attests the document next to the SBOM; grype
 keeps suppressed matches in `ignoredMatches`, so nothing is hidden. Every
 syft component also gets exactly one NVD identity: an extra component
@@ -170,15 +177,30 @@ rebuilt, never the machinery that packages them.
 
 The build matrix is derived from `.#ciMatrix` (image × tag × libc) crossed with
 `{amd64, arm64}` and runs on native runners. Each image is built, its SBOM
-generated and scanned, then smoke-tested before publishing: interpreter images
-run a one-liner; the compiled-binary bases run a binary compiled with the
-runner's toolchain through `/app/app` (static via `cc -static`, glibc via `cc`,
-musl via `musl-gcc`), exercising each libc's loader; the service images are
-probed over the network (nginx on `:8080`, `redis-cli ping`). Each per-arch
+generated and scanned, then smoke-tested before publishing (build.yml's
+*Smoke test* step):
+
+- jre `java -version`; python, node and php print from a one-liner
+  (`python3 -c`, `node -e`, `php -r`);
+- static, glibc and musl run a hello compiled with the runner's toolchain
+  through `/app/app` (`cc -static`, `cc`, `musl-gcc`), exercising each libc's
+  loader;
+- redis: `redis-cli ping` answers `PONG` (via `docker exec`);
+- postgres: `initdb` on a volume, then `pg_isready` and `psql -c 'SELECT 1'`;
+- mysql: `--initialize-insecure` on a volume, then `mysqladmin ping` and
+  `mysql -e 'SELECT 1'`;
+- rabbitmq: `rabbitmq-diagnostics ping`; the musl amd64 build also boots a
+  BEAM under an `LD_PRELOAD` shim that simulates AMX-sized signal frames
+  ([`.github/smoke/sigaltstack-amx.c`](../.github/smoke/sigaltstack-amx.c));
+- memcached: `stats` over TCP from the runner (the image has no client);
+- nginx: an HTTP GET on `:8080` returns a mounted `index.html`.
+
+Each per-arch
 image is then pushed by digest (untagged), keyless-signed with cosign
-(Sigstore, GitHub OIDC — no long-lived keys), given a CycloneDX SBOM
-attestation (its own arch's closure SBOM, attached to the image) plus a SLSA
-build-provenance attestation, verified — and only then is the per-arch tag
+(Sigstore, GitHub OIDC — no long-lived keys), given CycloneDX SBOM (its own
+arch's closure SBOM, attached to the image), OpenVEX and vulnerability-scan
+(cosign `vuln`, CI's grype result) attestations plus a SLSA build-provenance
+attestation, verified — and only then is the per-arch tag
 moved onto that digest, so a tag never points at an unsigned image. The
 multi-arch indexes are stitched from those verified digests per image:tag pair
 (a failed leg holds back only its own lists, and the run goes red naming them)
@@ -196,18 +218,66 @@ the `varde-go` /
 is first pushed under a fixed `<tag>-staging` name (signed and verified there,
 then the real tag is moved onto that digest — see build.yml); those `-staging`
 tags are a CI implementation detail, overwritten every run, and are not a
-supported way to consume an image. A weekly job commits a `flake.lock` bump to
-`main` and builds from that commit, so CVE fixes flow through and every
+supported way to consume an image.
+
+The weekly `bump-lock.yml` validates a nixpkgs bump before it lands: it
+commits the new `flake.lock` to the `bump/flake-lock` side branch (a
+GitHub-signed commit on top of main's head), runs `build.yml` with
+`verify_only` (full matrix, no sign/push/tag) and `e2e.yml` on that commit,
+and only if both are green fast-forwards `main` to that exact commit and
+dispatches the publishing run. A nixpkgs that breaks a build leaves `main` and
+the published images on last week's lock. CVE fixes flow through, and every
 published image corresponds to a commit whose lock reproduces it.
 
 A separate `e2e.yml` workflow builds every example in `examples/<image>/<variant>/`
 on top of a locally-built base, smoke-tests that the app runs, and asserts a
-per-image size budget (`scripts/e2e.sh`) — on PRs, and on `main` after every
-successful `build-image` run (the weekly bump included), so the examples are
-checked against the lock the published bases came from. musl service/runtime variants that are
-not in the public Nix cache come from the shared `varde` Cachix cache that
-`build.yml` populates (compiled from source only on a cache-cold first run);
-Actions minutes are free on public repos.
+per-image size budget (`scripts/e2e.sh`): on PRs, on `main` after every
+successful *push* `build-image` run, and from `bump-lock.yml` (its
+`verify-e2e` job) on the bumped lock before it lands. The weekly publish does
+not chain into it: bump-lock dispatches `build.yml` with `GITHUB_TOKEN`, and
+GitHub raises no `workflow_run` event for a run started that way, so
+`verify-e2e` is the weekly lock's e2e coverage.
+
+`rebuild-watchdog.yml` runs every 3 hours: it re-runs the failed jobs of the
+newest bump-lock and publishing build-image runs on `main` (3 attempts in
+total, cancelled runs left alone), checks that each `.#latestTags` image's
+linux/amd64 digest carries a verified vuln attestation from the last 10 days,
+and keeps one `rebuild-failed` issue open while either is wrong.
+
+In every workflow, musl service/runtime variants that are not in the public
+Nix cache come from the shared `varde` Cachix cache that `build.yml` populates
+(compiled from source only on a cache-cold first run); Actions minutes are
+free on public repos.
+
+## Maintaining a fork
+
+These steps are done for `ghcr.io/mathiasror`; they apply if you fork and
+publish your own.
+
+> **Cache setup, one-time:** create a free open-source cache named `varde` at
+> [cachix.org](https://cachix.org) (keep it **public** so fork PRs and end users
+> can read it), then add its write token as the repo secret `CACHIX_AUTH_TOKEN`
+> (Settings → Secrets and variables → Actions). Reads are anonymous on a public
+> cache — the token is only needed to *push*; without it builds still work and
+> still pull the cache, they just can't refill it.
+
+> **First publish, one-time step:** packages pushed by Actions are created
+> **private** by default — even from a public repo — so anonymous `docker pull`
+> would return 401 until you flip them. After the first successful build, set
+> each `varde-*` package to **Public** once (GHCR → the package → *Package
+> settings* → *Change visibility*) and connect it to this repository. Only then
+> does the "just `docker pull`, no token" promise hold.
+
+> **Publish checklist:** after a run on `main`,
+> - a red run's **manifest** job lists the tags whose manifest lists were *not*
+>   refreshed (a build leg failed or timed out); per-arch tags of the legs that
+>   succeeded are always current and signed. Re-run the failed legs, or fix and
+>   dispatch again from `main`; re-running only works within 7 days of the
+>   original run (the per-leg digest artifacts the manifest job stitches from
+>   expire then) — after that, dispatch a fresh build from `main`;
+> - confirm an anonymous `docker pull ghcr.io/mathiasror/varde-jre:latest` (any
+>   bare tag) resolves;
+> - first publish only: flip each `varde-*` package to **Public** (previous note).
 
 ## Non-goals
 
