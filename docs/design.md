@@ -75,7 +75,7 @@ for a binary you drop at `/app/app`.
 
 Every runtime/service image is built for both musl and glibc. The registry tag
 encodes the libc: the **bare tag is musl** (the default) and **`-glibc`** opts in
-(`varde-python:3.13` vs `varde-python:3.13-glibc`). musl is the default because a
+(`varde-python:3.14` vs `varde-python:3.14-glibc`). musl is the default because a
 smaller libc is less to patch and a smaller attack surface; glibc is there for
 workloads that need it (manylinux-only wheels, glibc-built native code).
 
@@ -119,7 +119,7 @@ The build is data-driven so that images are described, not wired up by hand.
   `.#ciMatrix` (each entry carries its `libc`) / `.#latestTags`, and
   `.#imageAliases` (published names that mirror another image's digests, e.g.
   `go` → `static`, `rust` → `glibc`). Tag dots become underscores in attribute
-  names, and the libc is part of the tag (`image-python-3_13-musl`).
+  names, and the libc is part of the tag (`image-python-3_14-musl`).
 
 The framework injects the non-root user, CA certs, tzdata, `/app`, a sticky
 `/tmp`, common env, OCI labels, and the SBOM app into every image. A module only

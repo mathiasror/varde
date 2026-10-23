@@ -295,7 +295,7 @@
       );
 
       # `nix eval --json .#ciMatrix`     -> [{image,tag,attr,sbomName,libc,debugTag,debugAttr,debugSbomName}, ...]
-      # `nix eval --json .#latestTags`   -> {jre="21"; python="3.13"; ...}  (version; CI resolves default libc)
+      # `nix eval --json .#latestTags`   -> {jre="21"; python="3.14"; ...}  (version; CI resolves default libc)
       # `nix eval --json .#imageAliases` -> {go="static"; rust="glibc";}    (published as mirror digests)
       #
       # One row per production variant. Its -debug sibling rides on the same

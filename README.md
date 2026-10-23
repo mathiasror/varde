@@ -36,7 +36,7 @@ VEX and provenance, see
 | Image | Tags | Runs | Drop-in contract |
 | --- | --- | --- | --- |
 | `varde-jre` | `17`* `21` `25` `latest`(=21) | JVM apps (Java/Kotlin) | `COPY app.jar /app/app.jar` (fat/boot jar) |
-| `varde-python` | `3.11` `3.12` `3.13` `latest`(=3.13) | Python apps | `COPY` interpreter deps + code into `/app` |
+| `varde-python` | `3.11` `3.12` `3.13` `3.14` `latest`(=3.14) | Python apps | `COPY` interpreter deps + code into `/app` |
 | `varde-node` | `22` `24` `latest`(=24) | Node.js apps | `COPY node_modules` + code into `/app` |
 | `varde-php` | `8.3` `8.4` `8.5` `latest`(=8.5) | PHP apps (cli + `php-fpm`) | `COPY` code + `vendor/` into `/app` |
 
@@ -79,16 +79,16 @@ musl** (the default); append **`-glibc`** to opt in to glibc:
 
 ```dockerfile
 # musl (default)
-FROM ghcr.io/mathiasror/varde-python:3.13
+FROM ghcr.io/mathiasror/varde-python:3.14
 # glibc (opt-in)
-FROM ghcr.io/mathiasror/varde-python:3.13-glibc
+FROM ghcr.io/mathiasror/varde-python:3.14-glibc
 ```
 
 musl is the default because a smaller libc means less to patch and a smaller
 attack surface. Reach for `-glibc` when something needs it — a wheel with only
 manylinux (glibc) binaries, a native addon built against glibc, or a prebuilt
 dependency that assumes glibc. Per-arch tags are libc-qualified, e.g.
-`:21-musl-arm64` or `:3.13-glibc-amd64`. The older bare-version per-arch tags
+`:21-musl-arm64` or `:3.14-glibc-amd64`. The older bare-version per-arch tags
 (`varde-jre`, `varde-python` and `varde-node` `:<ver>-amd64` / `:<ver>-arm64`)
 predate the libc split, when every image was glibc, so CI keeps them on the
 **glibc** build (`:<ver>-glibc-<arch>`), not on the bare tag's musl. Prefer

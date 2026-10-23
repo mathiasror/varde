@@ -19,16 +19,16 @@
 #     (it is a plain script we COPY separately, not an installable package).
 #
 # ── musl vs glibc: the builder must match the runtime's libc ─────────────────
-# varde's DEFAULT libc is musl (bare `:3.13`). Wheels with COMPILED native code
+# varde's DEFAULT libc is musl (bare `:3.14`). Wheels with COMPILED native code
 # are libc-specific (manylinux=glibc, musllinux=musl); a mismatched .so will not
 # load. So build on a libc that matches the runtime:
-#   * default musl runtime (:3.13)       -> python:3.13-alpine (musl), below.
-#   * opt-in glibc runtime (:3.13-glibc) -> python:3.13-slim (glibc) instead.
+#   * default musl runtime (:3.14)       -> python:3.14-alpine (musl), below.
+#   * opt-in glibc runtime (:3.14-glibc) -> python:3.14-slim (glibc) instead.
 # python-dateutil is pure Python (no .so), so it is libc-agnostic either way.
-ARG BASE_IMAGE=ghcr.io/mathiasror/varde-python:3.13
+ARG BASE_IMAGE=ghcr.io/mathiasror/varde-python:3.14
 
 # ---- builder stage: musl, matches the default varde-python runtime ----------
-FROM python:3.13-alpine AS deps
+FROM python:3.14-alpine AS deps
 # Pull the standalone uv binary from its official image (pinned by tag/digest in
 # production). Alternatively: `pip install uv`.
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
