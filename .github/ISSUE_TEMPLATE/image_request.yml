@@ -1,0 +1,46 @@
+name: Image or version request
+description: Ask for a new image, a new version tag, or a missing library or extension.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        varde images are built from nixpkgs, have no shell or package manager, and run as 1000:1000, so a request has to fit that contract. End-of-life runtime lines are not published. To send the module yourself, see [CONTRIBUTING.md](https://github.com/mathiasror/varde/blob/main/CONTRIBUTING.md#adding-an-image-or-a-tag).
+  - type: dropdown
+    id: kind
+    attributes:
+      label: Request type
+      options:
+        - New image
+        - New version tag of an existing image
+        - Missing library, extension or module in an existing image
+    validations:
+      required: true
+  - type: input
+    id: what
+    attributes:
+      label: Image and version
+      placeholder: varde-python:3.14
+    validations:
+      required: true
+  - type: input
+    id: nixpkgs
+    attributes:
+      label: nixpkgs attribute
+      description: The package in nixos-unstable, if you know it (search.nixos.org).
+      placeholder: python314
+  - type: dropdown
+    id: libc
+    attributes:
+      label: libc needed
+      options:
+        - Either (musl default, glibc opt-in)
+        - glibc only
+        - musl only
+  - type: textarea
+    id: why
+    attributes:
+      label: Use case
+      description: What you would run on it, and why an existing image does not work.
+    validations:
+      required: true

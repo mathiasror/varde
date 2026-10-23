@@ -1,0 +1,63 @@
+name: Image is lagging a CVE fix
+description: A published image still ships a component with a CVE that is fixed upstream or in nixpkgs.
+title: "[CVE] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Scan with **grype**: `grype <image>`, or the attested SBOM with the image's OpenVEX applied (see [Scanning varde images](https://github.com/mathiasror/varde#scanning-varde-images)). Trivy, Docker Scout and Snyk cannot see Nix packages and report these images clean whatever they ship, so their output cannot confirm or rule out a finding.
+
+        Images are rebuilt weekly from the latest nixos-unstable, so a fix usually arrives once it reaches that channel. Check the image's OpenVEX first: the CVE may already be marked `fixed` (a patched backport with no version bump), `not_affected`, or `affected` with a mitigation. A vulnerability in varde's own build goes to [private reporting](https://github.com/mathiasror/varde/security/advisories/new) instead.
+  - type: input
+    id: cve
+    attributes:
+      label: CVE ID
+      placeholder: CVE-2026-12345
+    validations:
+      required: true
+  - type: input
+    id: image
+    attributes:
+      label: Image and tag
+      placeholder: ghcr.io/mathiasror/varde-postgres:17
+    validations:
+      required: true
+  - type: input
+    id: digest
+    attributes:
+      label: Per-arch digest scanned
+      description: "`crane digest <image> --platform linux/amd64`"
+      placeholder: sha256:...
+    validations:
+      required: true
+  - type: input
+    id: scanner
+    attributes:
+      label: Scanner version and DB
+      description: "`grype version` and `grype db status`"
+      placeholder: grype 0.x.y, DB built 2026-10-20
+    validations:
+      required: true
+  - type: dropdown
+    id: vex
+    attributes:
+      label: Was the image's OpenVEX applied?
+      options:
+        - "Yes (grype --vex)"
+        - "No"
+    validations:
+      required: true
+  - type: textarea
+    id: match
+    attributes:
+      label: Scanner match
+      description: The matching line(s), with the package name and version grype reported.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: fix
+    attributes:
+      label: Where is it fixed?
+      description: Upstream release or commit, nixpkgs PR, and whether it has reached nixos-unstable, if you know.
