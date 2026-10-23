@@ -83,9 +83,9 @@ attack surface. Reach for `-glibc` when something needs it — a wheel with only
 manylinux (glibc) binaries, a native addon built against glibc, or a prebuilt
 dependency that assumes glibc. Per-arch tags are libc-qualified, e.g.
 `:21-musl-arm64` or `:3.13-glibc-amd64`. Bare-version per-arch tags such as
-`varde-jre:21-amd64` predate the libc split; CI keeps them on the same
-images as the bare tag (`:21`, the default libc), but prefer the
-libc-qualified form (`:21-musl-amd64`) so the libc is explicit.
+`varde-jre:21-amd64` predate the libc split; CI keeps them on the glibc
+builds they always pointed at (`:21-glibc-amd64`), but prefer the
+libc-qualified form so the libc is explicit.
 
 *`varde-jre:17` is **glibc-only** — Adoptium ships no aarch64 Alpine/musl JRE for
 JDK 17; `:21` and `:25` default to musl. `varde-mysql` is **glibc-only** — musl
@@ -208,8 +208,8 @@ All bases are the musl build unless noted.
 
 - **Architectures** other than `amd64` and `arm64`.
 - **musl** for `varde-jre:17` and `varde-mysql` (glibc-only, see above).
-- **Shell, debug or `-dev` variants** of any image; postgres's static `/bin/sh`
-  is the only shell shipped.
+- **Shell or `-dev` variants** of any production image; postgres's static
+  `/bin/sh` is the only shell shipped.
 - **Package managers at runtime**: no `npm` in node, no `pip` (or `ensurepip`)
   in python, no `composer`, `pear` or `pecl` in php. Install dependencies in a
   builder stage and `COPY` them in (see the examples).
