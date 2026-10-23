@@ -93,6 +93,30 @@
           else
             prev.sqlite;
       };
+      # Two more musl-only check-phase failures from the nixpkgs of 2026-10-22
+      # (02c087f3), which kept the jre and php musl legs red in bump run
+      # 39850337188 on every attempt:
+      #   - jemalloc 5.4.0's new unit test test_dss_primary_alloc_real_sbrk
+      #     expects a real sbrk(), which musl deliberately does not provide
+      #     (sbrk with a non-zero increment fails with ENOMEM), so it fails
+      #     on every musl build, both arches;
+      #   - boehm-gc 8.2.12's gctest aborts in incremental mode with "Signals
+      #     delivery fails constantly" (seen on the jre:21-musl amd64 leg), a
+      #     signal-timing test.
+      # Musl-only, for the same cache reason as p11kit above; Hydra still runs
+      # both suites for glibc.
+      muslTestOnlyNoCheck = final: prev: {
+        jemalloc =
+          if prev.stdenv.hostPlatform.isMusl then
+            prev.jemalloc.overrideAttrs { doCheck = false; }
+          else
+            prev.jemalloc;
+        boehmgc =
+          if prev.stdenv.hostPlatform.isMusl then
+            prev.boehmgc.overrideAttrs { doCheck = false; }
+          else
+            prev.boehmgc;
+      };
       # OpenSSL 3.5.9 (2026-09-29) fixes 13 CVEs, 4 rated High (CVE-2026-54873,
       # -72897, -84782, -84784). nixpkgs took it through staging (PR #568288),
       # which reached master on 2026-10-16 (staging-next #571813) but was still
@@ -130,6 +154,7 @@
           overlays = [
             p11kitTeardownRaceFix
             sqliteMuslNoCheck
+            muslTestOnlyNoCheck
             openssl359Musl
           ];
         }
