@@ -108,7 +108,7 @@
           {
             "@type": "Question",
             "name": "How is varde different from Google's distroless images?",
-            "acceptedAnswer": { "@type": "Answer", "text": "Both ship no shell and no package manager. varde builds every image with Nix instead of from Debian packages, defaults to musl with glibc one tag away, runs as non-root (1000:1000) by default, and also covers services: nginx, Redis, PostgreSQL, MySQL, RabbitMQ and Memcached." }
+            "acceptedAnswer": { "@type": "Answer", "text": "Neither ships a shell or a package manager in its production images (varde's one exception is PostgreSQL's static ash, which initdb requires). varde builds every image with Nix instead of from Debian packages, defaults to musl with glibc one tag away, runs as non-root (1000:1000) by default, and also covers services: nginx, Redis, PostgreSQL, MySQL, RabbitMQ and Memcached." }
           },
           {
             "@type": "Question",
@@ -205,7 +205,7 @@
         <p class="hero__lead reveal">
           Distroless, non-root base images for Java, Python, Node, PHP, Go and Rust — plus nginx,
           Redis, PostgreSQL, MySQL, RabbitMQ and Memcached. musl by default for a smaller libc;
-          glibc one tag away. No shell, no package manager, no root — almost nothing for an
+          glibc one tag away. No shell<sup>¹</sup>, no package manager, no root — almost nothing for an
           attacker to land on, and far less to patch. Built with Nix, signed with cosign,
           and shipped with an SBOM and SLSA provenance.
         </p>
@@ -243,13 +243,14 @@
         </figure>
 
         <ul class="trust reveal" aria-label="At a glance">
-          <li>0 shells</li>
+          <li title="Production images ship no shell. One exception: varde-postgres carries one static ash, because initdb requires it."><span>no shell<sup>¹</sup></span></li>
           <li>non-root</li>
           <li>musl by default</li>
           <li>SBOM per image</li>
           <li>cosign-signed</li>
           <li>free &amp; open</li>
         </ul>
+        <p class="trust__note reveal"><sup>¹</sup> Production images ship no shell. One exception: postgres carries one static <code class="inline">ash</code>, which <code class="inline">initdb</code> requires.</p>
       </div>
     </section>
 
@@ -259,7 +260,7 @@
         <header class="section__head reveal">
           <p class="eyebrow">The catalog</p>
           <h2 class="section__title">Runtimes, services, any binary.</h2>
-          <p class="section__sub">Each image is just the runtime — or, for a compiled binary, just its libc: non-root, no shell, <strong>musl by default</strong>. A scannable SBOM per image, multi-arch, on GitHub Container Registry.</p>
+          <p class="section__sub">Each image is just the runtime — or, for a compiled binary, just its libc: non-root, no shell (bar postgres's static <code class="inline">ash</code> for <code class="inline">initdb</code>), <strong>musl by default</strong>. A scannable SBOM per image, multi-arch, on GitHub Container Registry.</p>
         </header>
 
         <ul class="grid grid--images">
@@ -469,7 +470,7 @@
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2 3 7v10l9 5 9-5V7Z"/><path d="m3 7 9 5 9-5"/><path d="M12 12v10"/></svg>
             </span>
             <h3 class="feature__title">Distroless</h3>
-            <p class="feature__body">No shell, no package manager, no busybox, no coreutils. Just the runtime — nothing for an attacker to pivot through.</p>
+            <p class="feature__body">Production images ship no shell, no package manager, no coreutils. Just the runtime — nothing for an attacker to pivot through. The one exception: postgres's static <code class="inline">ash</code>, which <code class="inline">initdb</code> requires.</p>
           </li>
 
           <li class="feature reveal">
@@ -932,7 +933,7 @@
           </details>
           <details class="faq__item">
             <summary><h3 class="faq__q">How is varde different from Google's distroless images?</h3></summary>
-            <p>Both ship no shell and no package manager. varde builds every image with Nix instead of from Debian packages, defaults to musl with glibc one tag away, runs as non-root (<code class="inline">1000:1000</code>) by default, and also covers services: nginx, Redis, PostgreSQL, MySQL, RabbitMQ and Memcached. See <a class="text-link" href="#compare">the full comparison</a>.</p>
+            <p>Neither ships a shell or a package manager in its production images (varde's one exception is PostgreSQL's static <code class="inline">ash</code>, which <code class="inline">initdb</code> requires). varde builds every image with Nix instead of from Debian packages, defaults to musl with glibc one tag away, runs as non-root (<code class="inline">1000:1000</code>) by default, and also covers services: nginx, Redis, PostgreSQL, MySQL, RabbitMQ and Memcached. See <a class="text-link" href="#compare">the full comparison</a>.</p>
           </details>
           <details class="faq__item">
             <summary><h3 class="faq__q">Why does Trivy report zero vulnerabilities on a varde image?</h3></summary>
