@@ -434,7 +434,7 @@ jobs:
         # Not from a verify run: it would file the bump's findings under main's sha.
         if: ${{ !cancelled() && !inputs.verify_only && hashFiles('grype-sbom.sarif') != '' }}
         continue-on-error: true
-        uses: github/codeql-action/upload-sarif@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
           sarif_file: grype-sbom.sarif
           category: sbom-${{ matrix.image }}-${{ matrix.tag }}-${{ matrix.arch }}
@@ -443,7 +443,7 @@ jobs:
         # Not from a verify run: it would file the bump's findings under main's sha.
         if: ${{ !cancelled() && !inputs.verify_only && hashFiles('trivy-image.sarif') != '' }}
         continue-on-error: true
-        uses: github/codeql-action/upload-sarif@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
           sarif_file: trivy-image.sarif
           category: image-${{ matrix.image }}-${{ matrix.tag }}-${{ matrix.arch }}
