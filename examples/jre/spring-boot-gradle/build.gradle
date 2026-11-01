@@ -9,7 +9,7 @@ plugins {
     id 'java'
     // The Spring Boot plugin contributes the `bootJar` task (the self-contained
     // executable fat jar) and imports the Spring Boot dependencies BOM.
-    id 'org.springframework.boot' version '4.1.1'
+    id 'org.springframework.boot' version '4.1.2'
     // Applies the BOM so starters can be declared WITHOUT explicit versions.
     id 'io.spring.dependency-management' version '1.1.7'
 }
