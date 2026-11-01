@@ -4,4 +4,4 @@
 # That makes it the ideal "it just works" first dependency example.
 #
 # Pin exactly for reproducible builds.
-python-dateutil==2.9.0.post0
+python-dateutil==3.0.0
